@@ -1,0 +1,27 @@
+# Composer
+/vendor/
+composer.lock
+
+# IDE / OS
+/.idea/
+/.vscode/
+/.fleet/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Tests
+/tests/coverage/
+.phpunit.result.cache
+.phpunit.cache/
+
+# Build artifacts
+/build/
+/dist/
+*.zip
+
+# Local dev
+/wordpress/
+.env
+.env.local
