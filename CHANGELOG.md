@@ -29,6 +29,10 @@ versioning follows [SemVer](https://semver.org/).
   via `Storage\Settings::update`. Returns a uniform result envelope
   (`ok`, `message`, `site_id`) for the UI to render. Counterpart of
   `App\Http\Controllers\Api\V1\ConnectController::pair` in deckwp-app.
+- `DECKWP_CONNECT_SKIP_SSL_VERIFY` constant — opt-out of TLS verification
+  on outbound calls when set to `true` in `wp-config.php`. Required for
+  local pairing against Herd-served `*.test` URLs (self-signed cert).
+  Defaults to verify-on. NEVER enable in production.
 - `DeckWP\Connect\HTTP\ApiClient` — thin wrapper around `wp_remote_post`
   with a uniform result envelope (`ok`, `status`, `body`, `raw`,
   `error`). Wraps Laravel-style `{message: "..."}` and `{error: "..."}`

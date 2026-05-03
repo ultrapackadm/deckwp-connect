@@ -53,7 +53,7 @@ class ApiClient
         $response = wp_remote_post($url, [
             'timeout'     => self::DEFAULT_TIMEOUT,
             'redirection' => 2,
-            'sslverify'   => true,
+            'sslverify'   => $this->shouldVerifySsl(),
             'headers'     => array_merge([
                 'Content-Type' => 'application/json',
                 'Accept'       => 'application/json',
@@ -139,6 +139,28 @@ class ApiClient
         }
 
         return sprintf('Request failed with status %d.', $status);
+    }
+
+    /**
+     * Decide whether to verify the dashboard's TLS certificate.
+     *
+     * Default is verify-on (production safety). The
+     * `DECKWP_CONNECT_SKIP_SSL_VERIFY` constant flips it off — needed
+     * when pairing against a Herd-served `*.test` domain or any other
+     * dev URL with a self-signed cert. Add to `wp-config.php`:
+     *
+     *     define( 'DECKWP_CONNECT_SKIP_SSL_VERIFY', true );
+     *
+     * NEVER set this on production — disabling cert verification opens
+     * a clean MITM window for anyone on the network path.
+     */
+    private function shouldVerifySsl(): bool
+    {
+        if (defined('DECKWP_CONNECT_SKIP_SSL_VERIFY') && DECKWP_CONNECT_SKIP_SSL_VERIFY) {
+            return false;
+        }
+
+        return true;
     }
 
     private function userAgent(): string
