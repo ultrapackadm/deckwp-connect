@@ -4,6 +4,7 @@ namespace DeckWP\Connect;
 
 defined('ABSPATH') || exit;
 
+use DeckWP\Connect\Heartbeat\Scheduler as HeartbeatScheduler;
 use DeckWP\Connect\Settings\Page as SettingsPage;
 
 /**
@@ -15,7 +16,10 @@ use DeckWP\Connect\Settings\Page as SettingsPage;
  *
  * ## Subsystems registered (current state)
  *
- *   - Settings\Page  — admin UI for the pairing handshake (Tools menu)
+ *   - Settings\Page         — admin UI for the pairing handshake
+ *   - Heartbeat\Scheduler   — WP-Cron-driven heartbeat sender (gated
+ *                             by the DECKWP_CONNECT_ENABLE_HEARTBEAT
+ *                             constant; off by default)
  *
  * ## Subsystems planned (per CLAUDE.md, will be wired in upcoming sprints)
  *
@@ -66,5 +70,6 @@ class Bootstrap
         $this->booted = true;
 
         (new SettingsPage())->register();
+        (new HeartbeatScheduler())->register();
     }
 }

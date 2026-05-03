@@ -26,6 +26,15 @@ defined('ABSPATH') || exit;
  *         'raw'     => string,      // raw response body for debugging
  *         'error'   => string|null, // human-readable failure reason
  *     ]
+ *
+ * ## postJson vs postBody
+ *
+ * - {@see postJson()} — caller passes an array, we encode. Fine for
+ *   unsigned requests like the pair handshake.
+ * - {@see postBody()} — caller passes a pre-encoded string. Required
+ *   when the body is HMAC-signed: signing must run on the exact byte
+ *   sequence that goes over the wire, otherwise re-encoding here would
+ *   produce a different sha256 and break verification on the server.
  */
 class ApiClient
 {
@@ -37,7 +46,8 @@ class ApiClient
     private const DEFAULT_TIMEOUT = 15;
 
     /**
-     * POST a JSON body to a fully-qualified URL.
+     * POST an array as JSON. Caller-friendly when the body doesn't need
+     * to round-trip through a signer.
      *
      * @param array<string, mixed> $body
      * @param array<string, string> $headers
@@ -50,6 +60,19 @@ class ApiClient
             return $this->failure(0, '', 'Failed to encode request body as JSON.');
         }
 
+        return $this->postBody($url, $payload, $headers);
+    }
+
+    /**
+     * POST a pre-encoded body string. Used by signed requests
+     * (heartbeat, events) where the signer hashed the exact bytes we're
+     * about to send — re-encoding would diverge from that hash.
+     *
+     * @param array<string, string> $headers
+     * @return array{ok: bool, status: int, body: array|null, raw: string, error: string|null}
+     */
+    public function postBody(string $url, string $body, array $headers = []): array
+    {
         $response = wp_remote_post($url, [
             'timeout'     => self::DEFAULT_TIMEOUT,
             'redirection' => 2,
@@ -59,7 +82,7 @@ class ApiClient
                 'Accept'       => 'application/json',
                 'User-Agent'   => $this->userAgent(),
             ], $headers),
-            'body'        => $payload,
+            'body'        => $body,
         ]);
 
         if (is_wp_error($response)) {
@@ -69,13 +92,13 @@ class ApiClient
         $status = (int) wp_remote_retrieve_response_code($response);
         $raw    = (string) wp_remote_retrieve_body($response);
         $decoded = json_decode($raw, true);
-        $body = is_array($decoded) ? $decoded : null;
+        $decodedBody = is_array($decoded) ? $decoded : null;
 
         if ($status >= 200 && $status < 300) {
             return [
                 'ok'     => true,
                 'status' => $status,
-                'body'   => $body,
+                'body'   => $decodedBody,
                 'raw'    => $raw,
                 'error'  => null,
             ];
@@ -84,9 +107,9 @@ class ApiClient
         return [
             'ok'     => false,
             'status' => $status,
-            'body'   => $body,
+            'body'   => $decodedBody,
             'raw'    => $raw,
-            'error'  => $this->errorFromBody($status, $body, $raw),
+            'error'  => $this->errorFromBody($status, $decodedBody, $raw),
         ];
     }
 
@@ -126,13 +149,13 @@ class ApiClient
         }
 
         if ($status === 401) {
-            return 'Pairing token is invalid or has expired. Generate a new one in the dashboard.';
+            return 'Authentication failed. The pairing token may have expired, or the HMAC signature did not verify.';
         }
         if ($status === 422) {
-            return 'Server rejected the connector metadata. Check that your site URL is reachable from the public internet.';
+            return 'Server rejected the request body. Check the connector logs for the validation error.';
         }
         if ($status === 429) {
-            return 'Too many pairing attempts. Wait a minute and try again.';
+            return 'Rate-limited by the dashboard. Wait a minute and try again.';
         }
         if ($status >= 500) {
             return 'Dashboard returned a server error. Try again in a moment.';

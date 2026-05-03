@@ -4,6 +4,49 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [Unreleased] — 0.2.0
+
+### Added
+- `DeckWP\Connect\HMAC\Signer` — outbound request signer. Mirror of the
+  deckwp-app `HmacSigner` wire format
+  (`{ts}.{nonce}.{METHOD}.{path}.{sha256(body)}`, hex hmac-sha256).
+  Caller is responsible for `base64_decode`-ing the stored secret to
+  raw bytes before signing — matches the Laravel signer's contract.
+- `DeckWP\Connect\Inventory\PluginInventory` — collects the local
+  WP plugin list (slug, name, version, active state, update-available
+  flag from the `update_plugins` site transient). Output shape mirrors
+  what the dashboard's `PluginInstallation` table upserts against.
+- `DeckWP\Connect\Heartbeat\Scheduler` — WP-Cron scheduler + sender.
+  Hooks `deckwp_connect_heartbeat` to a `cron_schedules`-registered
+  interval (`deckwp_connect_heartbeat_interval`, value pulled from the
+  `heartbeat_seconds` settings key, server-issued during pair, default
+  300). Payload: event type, sent_at, wp/php versions, site_url,
+  multisite flag, full plugin inventory. Cron scheduling gated by
+  `DECKWP_CONNECT_ENABLE_HEARTBEAT` (default off) so the connector
+  doesn't fire against an endpoint the dashboard hasn't shipped yet —
+  flip to `true` once `/api/v1/sites/{id}/events` is live in
+  deckwp-app. Synchronous `sendNow()` method bypasses the schedule
+  and the flag for manual-trigger use cases.
+- "Send heartbeat now" button on the settings page (paired state).
+  Calls `Scheduler::sendNow()` and surfaces the HTTP status + any
+  error message via `add_settings_error`. Useful for validating the
+  signer + payload mid-development without waiting on cron.
+- `DeckWP\Connect\HTTP\ApiClient::postBody()` — POSTs a pre-encoded
+  body string. Required for HMAC-signed requests where the signer
+  hashes the exact bytes that go on the wire — re-encoding inside
+  the client (as `postJson` does) would diverge from that hash and
+  break server-side verification. `postJson` now thin-wraps `postBody`
+  after encoding.
+
+### Fixed
+- `REST\Auth\HmacVerifier` was hashing with the *base64-encoded*
+  secret string, but the dashboard's `HmacSigner` hashes with the raw
+  decoded bytes. Every inbound signature from the dashboard would
+  have failed verification once the dashboard started signing
+  requests. The verifier now `base64_decode`s the stored
+  `hmac_secret` before passing it to `hash_hmac`. No customer impact:
+  no inbound dashboard → connector requests have shipped yet.
+
 ## [Unreleased] — 0.1.0
 
 ### Added

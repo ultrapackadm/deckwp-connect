@@ -4,6 +4,7 @@ namespace DeckWP\Connect\Settings;
 
 defined('ABSPATH') || exit;
 
+use DeckWP\Connect\Heartbeat\Scheduler as HeartbeatScheduler;
 use DeckWP\Connect\Pairing\Handler as PairingHandler;
 use DeckWP\Connect\Storage\Settings as SettingsStore;
 
@@ -49,6 +50,9 @@ class Page
     /** Nonce action for the disconnect form. */
     private const NONCE_DISCONNECT = 'deckwp_connect_disconnect';
 
+    /** Nonce action for the manual "send heartbeat now" trigger. */
+    private const NONCE_HEARTBEAT = 'deckwp_connect_heartbeat_now';
+
     /** Querystring flag we set in the redirect after a handled submission. */
     private const FLAG_DONE = 'deckwp_connect_done';
 
@@ -58,10 +62,17 @@ class Page
     /** @var PairingHandler */
     private $pairing;
 
-    public function __construct(SettingsStore $settings = null, PairingHandler $pairing = null)
-    {
-        $this->settings = $settings ?? new SettingsStore();
-        $this->pairing  = $pairing ?? new PairingHandler();
+    /** @var HeartbeatScheduler */
+    private $heartbeat;
+
+    public function __construct(
+        SettingsStore $settings = null,
+        PairingHandler $pairing = null,
+        HeartbeatScheduler $heartbeat = null
+    ) {
+        $this->settings  = $settings ?? new SettingsStore();
+        $this->pairing   = $pairing ?? new PairingHandler();
+        $this->heartbeat = $heartbeat ?? new HeartbeatScheduler();
     }
 
     /**
@@ -108,6 +119,9 @@ class Page
             case 'disconnect':
                 $this->handleDisconnectSubmit();
                 break;
+            case 'heartbeat':
+                $this->handleHeartbeatSubmit();
+                break;
             default:
                 // Unknown action — ignore silently rather than expose
                 // the dispatcher's switch surface.
@@ -152,6 +166,46 @@ class Page
         );
         // settings_errors stores via set_transient() under a per-user key —
         // it survives the redirect into render() automatically.
+    }
+
+    /**
+     * Fire a heartbeat synchronously and report the outcome. Bypasses
+     * the WP-Cron schedule + the `DECKWP_CONNECT_ENABLE_HEARTBEAT` flag —
+     * useful for verifying signing + payload during dev without waiting
+     * for the cron to tick.
+     */
+    private function handleHeartbeatSubmit(): void
+    {
+        check_admin_referer(self::NONCE_HEARTBEAT);
+
+        $result = $this->heartbeat->sendNow();
+
+        if ($result['ok']) {
+            add_settings_error(
+                self::SLUG,
+                'heartbeat_ok',
+                sprintf(
+                    /* translators: %d: HTTP status code from the dashboard. */
+                    __('Heartbeat delivered (HTTP %d). Dashboard accepted the payload.', 'deckwp-connect'),
+                    (int) $result['status']
+                ),
+                'success'
+            );
+
+            return;
+        }
+
+        add_settings_error(
+            self::SLUG,
+            'heartbeat_failed',
+            sprintf(
+                /* translators: 1: HTTP status code, 2: error message. */
+                __('Heartbeat failed (HTTP %1$d): %2$s', 'deckwp-connect'),
+                (int) $result['status'],
+                (string) ($result['error'] ?? 'unknown')
+            ),
+            'error'
+        );
     }
 
     /**
@@ -286,7 +340,17 @@ class Page
         );
         echo '</tbody></table>';
 
-        echo '<form method="post" action="" style="margin-top:1.5em;">';
+        echo '<div style="margin-top:1.5em; display:flex; gap:0.5em; align-items:center;">';
+
+        // Send heartbeat now — synchronous probe for dev validation.
+        echo '<form method="post" action="" style="margin:0;">';
+        wp_nonce_field(self::NONCE_HEARTBEAT);
+        echo '<input type="hidden" name="deckwp_connect_action" value="heartbeat" />';
+        submit_button(__('Send heartbeat now', 'deckwp-connect'), 'secondary', 'submit', false);
+        echo '</form>';
+
+        // Disconnect.
+        echo '<form method="post" action="" style="margin:0;">';
         wp_nonce_field(self::NONCE_DISCONNECT);
         echo '<input type="hidden" name="deckwp_connect_action" value="disconnect" />';
         submit_button(
@@ -297,6 +361,8 @@ class Page
             ['onclick' => "return confirm('" . esc_js(__('Disconnect this site from DeckWP? The dashboard will lose remote control until you re-pair.', 'deckwp-connect')) . "');"]
         );
         echo '</form>';
+
+        echo '</div>';
     }
 
     /**

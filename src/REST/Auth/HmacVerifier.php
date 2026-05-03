@@ -159,6 +159,16 @@ class HmacVerifier
             return false;
         }
 
+        // 6b. The secret is stored base64-encoded (as received from the
+        // pair handshake). The dashboard's HmacSigner signs with the
+        // *raw* decoded bytes — see deckwp-app's HmacSigner docstring.
+        // If we hash with the encoded string here, signatures from the
+        // dashboard never verify. Decode before hashing.
+        $secretRaw = base64_decode((string) $settings['hmac_secret'], true);
+        if ($secretRaw === false || $secretRaw === '') {
+            return false;
+        }
+
         // 7. Constant-time HMAC compare.
         $bodyHash  = hash('sha256', $body);
         $canonical = sprintf(
@@ -169,7 +179,7 @@ class HmacVerifier
             $path,
             $bodyHash
         );
-        $expected = hash_hmac('sha256', $canonical, (string) $settings['hmac_secret']);
+        $expected = hash_hmac('sha256', $canonical, $secretRaw);
 
         return hash_equals($expected, $signature);
     }
