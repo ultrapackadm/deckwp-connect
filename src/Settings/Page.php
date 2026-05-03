@@ -56,6 +56,17 @@ class Page
     /** Querystring flag we set in the redirect after a handled submission. */
     private const FLAG_DONE = 'deckwp_connect_done';
 
+    /**
+     * Transient prefix for the per-user admin-notice flash. We use our
+     * own key (instead of core's `'settings_errors'`) so other plugins
+     * hooked into `admin_notices` can't accidentally consume it by
+     * calling `settings_errors()` without a slug argument before our
+     * `render()` runs — `get_settings_errors()` deletes the transient
+     * after merging, so a single such call would silently wipe the
+     * banner.
+     */
+    private const NOTICE_TRANSIENT_PREFIX = 'deckwp_connect_admin_notice_';
+
     /** @var SettingsStore */
     private $settings;
 
@@ -128,6 +139,32 @@ class Page
                 return;
         }
 
+        // Bridge our `add_settings_error()` notices across the PRG
+        // redirect. `add_settings_error` only populates the
+        // `$wp_settings_errors` global, which is request-scoped — without
+        // this transient hand-off the notice would be wiped by the 302
+        // and the operator would see a silent reload. We keep notices
+        // under a per-user, plugin-prefixed key (NOT core's shared
+        // `'settings_errors'` transient): any plugin hooked into
+        // `admin_notices` that calls bare `settings_errors()` would
+        // consume the shared key and silently swallow our banner before
+        // `render()` runs. `render()` reads this back and re-injects via
+        // `add_settings_error` so `settings_errors(self::SLUG)` renders
+        // it normally.
+        $errors = get_settings_errors(self::SLUG);
+        if (! empty($errors)) {
+            $key = self::NOTICE_TRANSIENT_PREFIX . get_current_user_id();
+            set_transient($key, $errors, 30);
+
+            if (function_exists('error_log')) {
+                error_log(sprintf(
+                    '[deckwp-connect] flash stored (key=%s, count=%d)',
+                    $key,
+                    count($errors)
+                ));
+            }
+        }
+
         // PRG redirect — strip the POST body, append the done flag so
         // the page can show the right notice.
         $redirect = add_query_arg(
@@ -164,8 +201,11 @@ class Page
             $result['message'],
             $result['ok'] ? 'success' : 'error'
         );
-        // settings_errors stores via set_transient() under a per-user key —
-        // it survives the redirect into render() automatically.
+        // Note: this notice ONLY survives the PRG redirect because
+        // `dispatchSubmission()` flushes the request-scoped
+        // `$wp_settings_errors` global into the `'settings_errors'`
+        // transient before redirecting. Without that bridge, every
+        // submission would 302 to a silent reload.
     }
 
     /**
@@ -236,6 +276,8 @@ class Page
             wp_die(esc_html__('You do not have permission to view this page.', 'deckwp-connect'), 403);
         }
 
+        $this->flushTransientNotices();
+
         echo '<div class="wrap">';
         echo '<h1>' . esc_html__('DeckWP Connect', 'deckwp-connect') . '</h1>';
 
@@ -248,6 +290,44 @@ class Page
         }
 
         echo '</div>';
+    }
+
+    /**
+     * Pull any stashed flash notices out of the per-user transient and
+     * re-inject them into the request-scoped `$wp_settings_errors`
+     * global so the upcoming `settings_errors(self::SLUG)` call renders
+     * them like any inline notice. See {@see dispatchSubmission()} for
+     * why we don't use core's shared `'settings_errors'` transient.
+     */
+    private function flushTransientNotices(): void
+    {
+        $key = self::NOTICE_TRANSIENT_PREFIX . get_current_user_id();
+        $errors = get_transient($key);
+        if (! is_array($errors) || empty($errors)) {
+            return;
+        }
+
+        delete_transient($key);
+
+        foreach ($errors as $err) {
+            if (! is_array($err)) {
+                continue;
+            }
+            add_settings_error(
+                (string) ($err['setting'] ?? self::SLUG),
+                (string) ($err['code']    ?? 'notice'),
+                (string) ($err['message'] ?? ''),
+                (string) ($err['type']    ?? 'info')
+            );
+        }
+
+        if (function_exists('error_log')) {
+            error_log(sprintf(
+                '[deckwp-connect] flash flushed (key=%s, count=%d)',
+                $key,
+                count($errors)
+            ));
+        }
     }
 
     /**

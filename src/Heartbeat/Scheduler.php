@@ -166,39 +166,68 @@ class Scheduler
      * so the Settings page's "Send heartbeat now" button can render it
      * back to the operator without going through the log.
      *
+     * Logs every outcome (ok or fail) to `error_log`. The ok line is
+     * the only durable trace when the operator triggers a heartbeat
+     * via the Settings button — flash notices ride a 30s transient
+     * that's easy to miss, but the log line stays. Enable WP_DEBUG_LOG
+     * in `wp-config.php` to route this to `wp-content/debug.log`.
+     *
      * @return array{ok: bool, status: int, body: array|null, raw: string, error: string|null}
      */
     public function sendNow(): array
     {
         if (! $this->settings->isPaired()) {
-            return $this->failure('Connector is not paired with a dashboard.');
+            $result = $this->failure('Connector is not paired with a dashboard.');
+            $this->logFailure($result);
+
+            return $result;
         }
 
         $callbackUrl = (string) $this->settings->get('callback_url', '');
         if ($callbackUrl === '') {
-            return $this->failure('No callback_url stored — re-pair the site to get one.');
+            $result = $this->failure('No callback_url stored — re-pair the site to get one.');
+            $this->logFailure($result);
+
+            return $result;
         }
 
         $secretBase64 = (string) $this->settings->get('hmac_secret', '');
         $secretRaw = base64_decode($secretBase64, true);
         if ($secretRaw === false || $secretRaw === '') {
-            return $this->failure('hmac_secret is missing or not valid base64.');
+            $result = $this->failure('hmac_secret is missing or not valid base64.');
+            $this->logFailure($result);
+
+            return $result;
         }
 
         $payload = $this->buildPayload();
         $body = wp_json_encode($payload);
         if ($body === false) {
-            return $this->failure('Failed to encode heartbeat payload as JSON.');
+            $result = $this->failure('Failed to encode heartbeat payload as JSON.');
+            $this->logFailure($result);
+
+            return $result;
         }
 
         $path = parse_url($callbackUrl, PHP_URL_PATH);
         if (! is_string($path) || $path === '') {
-            return $this->failure('callback_url has no path component.');
+            $result = $this->failure('callback_url has no path component.');
+            $this->logFailure($result);
+
+            return $result;
         }
 
         $signature = $this->signer->sign('POST', $path, $body, $secretRaw);
 
-        return $this->http->postBody($callbackUrl, $body, $signature);
+        $result = $this->http->postBody($callbackUrl, $body, $signature);
+
+        if ($result['ok']) {
+            $this->logSuccess($result, count((array) ($payload['plugins'] ?? [])));
+        } else {
+            $this->logFailure($result);
+        }
+
+        return $result;
     }
 
     /**
@@ -251,6 +280,22 @@ class Scheduler
             '[deckwp-connect] heartbeat failed (status=%d): %s',
             (int) $result['status'],
             (string) ($result['error'] ?? 'unknown')
+        ));
+    }
+
+    /**
+     * @param array{ok: bool, status: int, body: array|null, raw: string, error: string|null} $result
+     */
+    private function logSuccess(array $result, int $pluginCount): void
+    {
+        if (! function_exists('error_log')) {
+            return;
+        }
+
+        error_log(sprintf(
+            '[deckwp-connect] heartbeat ok (status=%d, plugins=%d)',
+            (int) $result['status'],
+            $pluginCount
         ));
     }
 }

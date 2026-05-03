@@ -46,6 +46,32 @@ versioning follows [SemVer](https://semver.org/).
   requests. The verifier now `base64_decode`s the stored
   `hmac_secret` before passing it to `hash_hmac`. No customer impact:
   no inbound dashboard → connector requests have shipped yet.
+- Settings page admin notices were lost across the PRG redirect.
+  `add_settings_error()` only writes to the request-scoped
+  `$wp_settings_errors` global, and the bridge into the
+  `'settings_errors'` transient that core's `options.php` does for you
+  doesn't run when a custom admin handler does its own
+  `wp_safe_redirect()`. Symptom: clicking "Send heartbeat now" (or
+  Connect, or Disconnect) appeared to do nothing — the request was
+  fully processed and persisted, but the green/red banner never
+  rendered after the 302. Fix: `Settings\Page::dispatchSubmission()`
+  now stashes the slug's notices into a per-user, plugin-prefixed
+  transient (`deckwp_connect_admin_notice_<user_id>`) before
+  redirecting, and `render()` reads them back via
+  `flushTransientNotices()` and re-injects them so
+  `settings_errors(self::SLUG)` renders the banner like any inline
+  notice. We deliberately avoid core's shared `'settings_errors'`
+  transient: any plugin hooked into `admin_notices` that calls bare
+  `settings_errors()` (without our slug arg) would consume that
+  transient before our render runs, silently swallowing our banner —
+  `get_settings_errors()` deletes the transient after the first
+  merge.
+- `Heartbeat\Scheduler::sendNow()` now writes a one-line
+  `error_log()` entry on every outcome (ok or fail). The admin
+  notice is the primary UX signal but it rides a 30-second transient
+  that's easy to lose on a fast browser; the log line is the durable
+  trace. Enable `WP_DEBUG_LOG` in `wp-config.php` to route it to
+  `wp-content/debug.log`.
 
 ## [Unreleased] — 0.1.0
 
