@@ -1,0 +1,70 @@
+<?php
+
+namespace DeckWP\Connect;
+
+defined('ABSPATH') || exit;
+
+use DeckWP\Connect\Settings\Page as SettingsPage;
+
+/**
+ * Boots and registers every connector subsystem on `plugins_loaded`.
+ *
+ * Kept thin on purpose — the heavy lifting lives in each subsystem class.
+ * This file should change only when a NEW subsystem is added or removed,
+ * never when an existing subsystem's internals shift.
+ *
+ * ## Subsystems registered (current state)
+ *
+ *   - Settings\Page  — admin UI for the pairing handshake (Tools menu)
+ *
+ * ## Subsystems planned (per CLAUDE.md, will be wired in upcoming sprints)
+ *
+ *   - REST\Server                — exposes deckwp/v1/* routes for the dashboard
+ *   - Transport\InitHookFallback — bypass when /wp-json is blocked by host
+ *   - DropIn\Installer           — installs wp-content/fatal-error-handler.php
+ *   - Whitelabel\Branding        — rewrites plugin row metadata
+ *   - Maintenance\Page           — 503 holding page
+ *   - Updater\SelfUpdater        — pulls connector self-updates
+ *
+ * ## Singleton
+ *
+ * One Bootstrap per request. The instance is intentionally NOT exposed as
+ * a global service locator — subsystems should construct their own
+ * collaborators (or have them passed in) rather than reaching back here.
+ * The container is just a boot orchestrator.
+ */
+class Bootstrap
+{
+    /** @var Bootstrap|null */
+    private static $instance = null;
+
+    /** @var bool */
+    private $booted = false;
+
+    private function __construct()
+    {
+        // Private — go through {@see boot()}.
+    }
+
+    /**
+     * Idempotent entrypoint. Safe to call multiple times: subsystems
+     * register their hooks on first boot, subsequent calls no-op.
+     */
+    public static function boot(): void
+    {
+        if (self::$instance === null) {
+            self::$instance = new self();
+        }
+        self::$instance->run();
+    }
+
+    private function run(): void
+    {
+        if ($this->booted) {
+            return;
+        }
+        $this->booted = true;
+
+        (new SettingsPage())->register();
+    }
+}

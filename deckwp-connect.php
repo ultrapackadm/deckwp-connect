@@ -107,17 +107,15 @@ function deckwp_connect_ensure_pairing_token(): void
 }
 
 // ─── Boot ─────────────────────────────────────────────────────────────────
+//
+// All subsystem wiring lives in {@see DeckWP\Connect\Bootstrap} — this
+// hook just kicks it off after WP has finished loading plugins (so other
+// plugins' filters are available, e.g. for the Whitelabel branding hooks
+// once that subsystem ships).
 add_action('plugins_loaded', static function () {
     deckwp_connect_ensure_pairing_token();
 
-    // Sprint 1 G2-G6 will register subsystems here:
-    //   (new \DeckWP\Connect\Settings\Page())->register();
-    //   (new \DeckWP\Connect\REST\Server())->register();
-    //   (new \DeckWP\Connect\Transport\InitHookFallback())->register();
-    //   (new \DeckWP\Connect\DropIn\Installer())->install();
-    //   (new \DeckWP\Connect\Whitelabel\Branding())->register();
-    //   (new \DeckWP\Connect\Maintenance\Page())->register();
-    //   (new \DeckWP\Connect\Updater\SelfUpdater())->register();
+    \DeckWP\Connect\Bootstrap::boot();
 });
 
 // Settings link on the plugins list row
