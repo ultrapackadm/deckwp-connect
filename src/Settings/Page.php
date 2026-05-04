@@ -251,18 +251,43 @@ class Page
     /**
      * Wipe the connection keys. Idempotent: clicking Disconnect twice
      * is harmless.
+     *
+     * Also fires a best-effort `disconnect` event at the dashboard so
+     * the site row can flip from `paired` to `revoked` instead of
+     * sitting at "Paired" with stale `last_seen_at`. The notification
+     * MUST happen before `clearConnection()` — once the secret is
+     * gone we can't sign the request anymore. If the network call
+     * fails we still proceed with the local clear (the user wants out;
+     * a stale dashboard row is recoverable, an unclickable Disconnect
+     * button is not).
      */
     private function handleDisconnectSubmit(): void
     {
         check_admin_referer(self::NONCE_DISCONNECT);
 
+        $remote = $this->pairing->disconnect();
         $this->settings->clearConnection();
+
+        if ($remote['ok']) {
+            add_settings_error(
+                self::SLUG,
+                'disconnected',
+                __('Disconnected from DeckWP. The dashboard has been notified.', 'deckwp-connect'),
+                'success'
+            );
+
+            return;
+        }
 
         add_settings_error(
             self::SLUG,
-            'disconnected',
-            __('Disconnected from DeckWP. This site no longer accepts dashboard commands.', 'deckwp-connect'),
-            'success'
+            'disconnected_local_only',
+            sprintf(
+                /* translators: %s: error message from the dashboard call. */
+                __('Disconnected locally, but the dashboard could not be notified (%s). It may still show this site as paired until the next stale check.', 'deckwp-connect'),
+                (string) $remote['message']
+            ),
+            'warning'
         );
     }
 

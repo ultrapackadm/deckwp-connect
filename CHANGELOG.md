@@ -37,6 +37,22 @@ versioning follows [SemVer](https://semver.org/).
   the client (as `postJson` does) would diverge from that hash and
   break server-side verification. `postJson` now thin-wraps `postBody`
   after encoding.
+- `Pairing\Handler::disconnect()` — best-effort outbound `disconnect`
+  event so the dashboard can flip the site row from `paired` to
+  `revoked` instead of leaving it at "Paired" with stale
+  `last_seen_at`. Sent as a normal HMAC-signed event to the same
+  callback URL the heartbeat uses; the dashboard's `EventsController`
+  already discriminates by the `event` field, so no new endpoint is
+  needed. A dashboard that hasn't shipped the handler yet returns
+  200 + `{"status":"ignored"}` (forward-compat); the connector
+  reads the response body and surfaces this honestly as a warning
+  ("dashboard accepted the request but doesn't yet process disconnect
+  events") rather than claiming the dashboard was notified.
+  `Settings\Page::handleDisconnectSubmit()` now calls this BEFORE
+  `clearConnection()` — after the local clear the secret is gone and
+  we can't sign anymore — and renders three outcomes in the admin
+  notice: `accepted` → success, `ignored` → warning (local only),
+  transport/HMAC error → warning (local only).
 
 ### Fixed
 - `REST\Auth\HmacVerifier` was hashing with the *base64-encoded*
