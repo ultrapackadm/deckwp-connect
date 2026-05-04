@@ -4,6 +4,36 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.2.1] — 2026-05-04
+
+### Fixed
+- The dashboard → connector half of the disconnect lifecycle was
+  missing. After v0.2.0 closed the connector → dashboard side
+  (operator clicks Disconnect on WP, dashboard flips Revoked), the
+  reverse direction left the connector stranded: clicking Disconnect
+  on the dashboard's `/sites/{uuid}` flipped Revoked + deleted the
+  credential, but the WP admin still showed "This site is paired
+  with DeckWP" and the connector kept firing heartbeats with
+  credentials that could never authenticate again. Now
+  `Heartbeat\Scheduler::sendNow()` self-cleans on a 401 response:
+  the dashboard's `VerifyConnectorHmac` middleware returns 401 when
+  there's no credential row for the site (which is exactly the
+  state after `DisconnectProcessor` runs), so the connector treats
+  any 401 as proof of revocation. It calls
+  `Settings::clearConnection()`, stashes a 1-day transient with the
+  platform URL captured before the clear, and the next admin page
+  render shows a warning banner ("DeckWP revoked this connection")
+  with a "Re-pair this site" link back to `/sites/create`.
+
+  Lag is bounded by the heartbeat interval — at the default 300s
+  cron tick, the connector's UI catches up within 5 minutes of a
+  dashboard-side revoke. Operators in a hurry can hit "Send
+  heartbeat now" to trigger the cleanup immediately. Edge case:
+  a transient 401 from clock skew >60s would also trigger this and
+  bump the operator to unpaired; the timestamp window is 60s and
+  `time()` is re-derived per request, so this only happens on a
+  meaningfully misconfigured server clock — re-pair is 30s.
+
 ## [0.2.0] — 2026-05-03
 
 ### Added

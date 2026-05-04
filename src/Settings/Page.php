@@ -308,6 +308,8 @@ class Page
 
         settings_errors(self::SLUG);
 
+        $this->renderRevokeNotice();
+
         if ($this->settings->isPaired()) {
             $this->renderStatus();
         } else {
@@ -315,6 +317,47 @@ class Page
         }
 
         echo '</div>';
+    }
+
+    /**
+     * Render the "dashboard revoked this connection" banner if the
+     * heartbeat scheduler stashed one. Shows on the next admin page
+     * load after a 401 — explains to the operator why their settings
+     * page suddenly went back to the unpaired form, and links back to
+     * the dashboard's /sites/create so they can re-pair without
+     * hunting for the URL.
+     *
+     * Persisted in a 1-day transient (set by
+     * {@see \DeckWP\Connect\Heartbeat\Scheduler::handleRevoke()}); we
+     * delete it here on first read so the banner doesn't follow the
+     * operator forever after a single click.
+     */
+    private function renderRevokeNotice(): void
+    {
+        $notice = get_transient('deckwp_connect_revoke_notice');
+        if (! is_array($notice)) {
+            return;
+        }
+
+        delete_transient('deckwp_connect_revoke_notice');
+
+        $platformUrl = (string) ($notice['platform_url'] ?? '');
+        $repairLink = $platformUrl !== ''
+            ? rtrim($platformUrl, '/') . '/sites/create'
+            : '';
+
+        echo '<div class="notice notice-warning"><p>';
+        echo '<strong>' . esc_html__('DeckWP revoked this connection.', 'deckwp-connect') . '</strong> ';
+        echo esc_html__(
+            'Your WordPress site continues to work normally. The dashboard removed our credentials, so we cleared the local connection too.',
+            'deckwp-connect'
+        );
+        if ($repairLink !== '') {
+            echo ' <a href="' . esc_url($repairLink) . '" target="_blank" rel="noopener">';
+            echo esc_html__('Re-pair this site →', 'deckwp-connect');
+            echo '</a>';
+        }
+        echo '</p></div>';
     }
 
     /**

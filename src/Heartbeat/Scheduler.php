@@ -221,6 +221,29 @@ class Scheduler
 
         $result = $this->http->postBody($callbackUrl, $body, $signature);
 
+        // Self-cleanup on 401. The dashboard's `VerifyConnectorHmac`
+        // middleware returns 401 when there's no credential row to
+        // compare against — which is exactly what happens after a
+        // dashboard-initiated disconnect (the DisconnectProcessor
+        // deletes the credential). Without this branch the connector
+        // would keep firing heartbeats forever, getting 401s, and the
+        // WP admin would still display "Paired" with credentials that
+        // can never authenticate again. Treat any 401 as proof the
+        // dashboard revoked us, clear local state, and stash a notice
+        // for the next admin page render. This closes the dashboard →
+        // connector half of the disconnect lifecycle (the connector →
+        // dashboard half landed in v0.2.0 via the `disconnect` event).
+        //
+        // Edge case: a transient 401 from clock skew >60s would also
+        // trigger this. The HmacSigner's timestamp window is 60s and
+        // we re-derive `time()` per request, so skew that big is a
+        // misconfigured server clock — the operator gets bumped to
+        // unpaired and re-pairs in 30s, low cost for a rare event.
+        if ((int) ($result['status'] ?? 0) === 401) {
+            $this->handleRevoke();
+            $result['error'] = 'Dashboard revoked this connection — local state has been cleared. Re-pair from the dashboard if you want to reconnect.';
+        }
+
         if ($result['ok']) {
             $this->logSuccess($result, count((array) ($payload['plugins'] ?? [])));
         } else {
@@ -228,6 +251,34 @@ class Scheduler
         }
 
         return $result;
+    }
+
+    /**
+     * Wipe local connection state and stash a transient notice so the
+     * next admin page render can tell the operator what happened.
+     *
+     * Called when {@see self::sendNow()} sees a 401 from the dashboard,
+     * which is the dashboard's signal that this site's credential was
+     * deleted (operator clicked Disconnect on the dashboard side, or
+     * staff revoked it manually). Captures `platform_url` BEFORE the
+     * clear so the notice can render a "Re-pair this site" link back
+     * to the right dashboard.
+     */
+    private function handleRevoke(): void
+    {
+        $platformUrl = (string) $this->settings->get('platform_url', '');
+
+        $this->settings->clearConnection();
+
+        $ttl = defined('DAY_IN_SECONDS') ? DAY_IN_SECONDS : 86400;
+        set_transient('deckwp_connect_revoke_notice', [
+            'platform_url' => $platformUrl,
+            'revoked_at'   => time(),
+        ], $ttl);
+
+        if (function_exists('error_log')) {
+            error_log('[deckwp-connect] connection revoked by dashboard (heartbeat returned 401) — local state cleared');
+        }
     }
 
     /**
