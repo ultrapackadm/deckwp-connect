@@ -5,6 +5,8 @@ namespace DeckWP\Connect;
 defined('ABSPATH') || exit;
 
 use DeckWP\Connect\Heartbeat\Scheduler as HeartbeatScheduler;
+use DeckWP\Connect\REST\Server as RestServer;
+use DeckWP\Connect\Scan\Scheduler as ScanScheduler;
 use DeckWP\Connect\Settings\Page as SettingsPage;
 
 /**
@@ -20,10 +22,15 @@ use DeckWP\Connect\Settings\Page as SettingsPage;
  *   - Heartbeat\Scheduler   — WP-Cron-driven heartbeat sender (gated
  *                             by the DECKWP_CONNECT_ENABLE_HEARTBEAT
  *                             constant; off by default)
+ *   - Scan\Scheduler        — WP-Cron-driven security scan sender
+ *                             (gated by DECKWP_CONNECT_ENABLE_SCAN;
+ *                             off by default)
+ *   - REST\Server           — exposes deckwp/v1/* routes for the
+ *                             dashboard. Currently: POST /scan
+ *                             (the "Scan now" trigger). HMAC-protected.
  *
  * ## Subsystems planned (per CLAUDE.md, will be wired in upcoming sprints)
  *
- *   - REST\Server                — exposes deckwp/v1/* routes for the dashboard
  *   - Transport\InitHookFallback — bypass when /wp-json is blocked by host
  *   - DropIn\Installer           — installs wp-content/fatal-error-handler.php
  *   - Whitelabel\Branding        — rewrites plugin row metadata
@@ -71,5 +78,7 @@ class Bootstrap
 
         (new SettingsPage())->register();
         (new HeartbeatScheduler())->register();
+        (new ScanScheduler())->register();
+        (new RestServer())->register();
     }
 }

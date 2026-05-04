@@ -4,6 +4,54 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.3.0] — 2026-05-04
+
+### Added
+- `Scan\Scanner` — local-filesystem security scanner. Three checks
+  in this release, each fast, deterministic, and free of external
+  API calls so the scan can run in-request on a 60s budget:
+    1. PHP files inside `wp-content/uploads/` (high-signal artifact
+       of webshell uploads).
+    2. Obfuscation patterns (`eval(base64_decode(...))`,
+       `eval(gzinflate(...))`, `eval(str_rot13(...))`) anywhere in
+       `plugins/` or `themes/`. The three workhorse signatures of
+       injected backdoors — high precision, low false-positive
+       rate against legitimate plugin code.
+    3. World-writable `wp-config.php`. Common on shared hosts
+       where someone chmod 777'd the file to "fix permissions";
+       lets unprivileged users on the same server read DB
+       credentials.
+  Soft-cap of 50 findings per run; payloads truncate gracefully
+  with a `truncated: true` flag. Skips files >5 MB and
+  `vendor/`/`node_modules/`/`.git/`/`tests/` subdirectories.
+- `Scan\Scheduler` — WP-Cron-driven scan sender. Hooks
+  `deckwp_connect_scan` to a `cron_schedules`-registered interval
+  (`deckwp_connect_scan_interval`, value pulled from
+  `scan_seconds` settings key, default 86400). Gated by
+  `DECKWP_CONNECT_ENABLE_SCAN` (off by default) so the connector
+  doesn't fire results into the void during phased rollouts.
+  Mirrors the heartbeat scheduler's 401 self-cleanup so a
+  dashboard-revoked connector cleans local state on the next
+  scan tick.
+- `REST\Server` — registers the connector's `deckwp/v1/*` REST
+  surface. First route: `POST /wp-json/deckwp/v1/scan`,
+  HMAC-protected via the existing `REST\Auth\HmacVerifier` as a
+  `permission_callback`. Triggered by the dashboard's "Scan now"
+  button — runs the scan synchronously and returns the result
+  envelope inline (cron-driven scans take the outbound event-push
+  path instead).
+- `REST\Routes\ScanRoute` — handler for the `/scan` route.
+  Delegates to `Scan\Scheduler::runScan()` so manual and
+  scheduled scans share the same Scanner code path; only the
+  delivery channel differs.
+
+### Compatibility
+- Requires WordPress 5.6+, PHP 7.4+
+- No breaking changes from v0.2.1
+- Interoperates with deckwp-app's matching v0.3.0 release that adds
+  the `scan_completed` event handler and the dashboard-side "Scan
+  now" button
+
 ## [0.2.1] — 2026-05-04
 
 ### Fixed
