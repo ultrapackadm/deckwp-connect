@@ -5,6 +5,7 @@ namespace DeckWP\Connect\REST;
 defined('ABSPATH') || exit;
 
 use DeckWP\Connect\REST\Auth\HmacVerifier;
+use DeckWP\Connect\REST\Routes\InstallBatchRoute;
 use DeckWP\Connect\REST\Routes\ScanRoute;
 
 /**
@@ -17,15 +18,18 @@ use DeckWP\Connect\REST\Routes\ScanRoute;
  * canonical against our stored hmac_secret, and constant-time
  * compares — no further auth check is needed inside route handlers.
  *
- * ## Routes (v0.3.0)
+ * ## Routes (v0.4.0)
  *
- *   - POST /wp-json/deckwp/v1/scan — run a scan on demand. Triggered
- *     by the dashboard's "Scan now" button. {@see ScanRoute}.
+ *   - POST /wp-json/deckwp/v1/scan — run a security scan on demand.
+ *     Triggered by the dashboard's "Scan now" button.
+ *     {@see ScanRoute}.
+ *   - POST /wp-json/deckwp/v1/install-batch — install/upgrade a
+ *     batch of plugins. wp.org-only in v0.4.0; UltraPack premium
+ *     catalog support lands when the dashboard's catalog client
+ *     ships. {@see InstallBatchRoute}.
  *
  * ## Planned (Sprint 4+)
  *
- *   - POST /wp-json/deckwp/v1/install-batch — install plugins/themes
- *     from a dashboard-provided ZIP set.
  *   - POST /wp-json/deckwp/v1/update-batch — apply updates with
  *     pre-scan + post-scan safety net.
  *   - POST /wp-json/deckwp/v1/plugin-action — activate/deactivate/
@@ -47,12 +51,17 @@ class Server
     /** @var ScanRoute */
     private $scanRoute;
 
+    /** @var InstallBatchRoute */
+    private $installBatchRoute;
+
     public function __construct(
         HmacVerifier $verifier = null,
-        ScanRoute $scanRoute = null
+        ScanRoute $scanRoute = null,
+        InstallBatchRoute $installBatchRoute = null
     ) {
-        $this->verifier  = $verifier ?? new HmacVerifier();
-        $this->scanRoute = $scanRoute ?? new ScanRoute();
+        $this->verifier          = $verifier ?? new HmacVerifier();
+        $this->scanRoute         = $scanRoute ?? new ScanRoute();
+        $this->installBatchRoute = $installBatchRoute ?? new InstallBatchRoute();
     }
 
     /**
@@ -75,6 +84,12 @@ class Server
             'deckwp/v1',
             '/scan',
             $this->scanRoute->args($permissionCallback)
+        );
+
+        register_rest_route(
+            'deckwp/v1',
+            '/install-batch',
+            $this->installBatchRoute->args($permissionCallback)
         );
     }
 }

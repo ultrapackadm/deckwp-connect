@@ -4,6 +4,41 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.4.0] — 2026-05-04
+
+### Added
+- `Install\Installer` — installs/upgrades a batch of plugins via
+  WordPress core's `Plugin_Upgrader::upgrade()`. Refreshes the
+  `update_plugins` site transient first via `wp_update_plugins()`
+  so the upgrader has fresh download URLs to work with. Per-item
+  results map cleanly to the dashboard's Update lifecycle:
+  `installed` → Success with version bump, `unchanged` → Success
+  with no bump (already on latest), `failed` → Failed with the
+  WP_Error message surfaced in the error field. Each item runs
+  independently — one failure doesn't abort the batch.
+- `REST\Routes\InstallBatchRoute` — second inbound REST route on
+  the connector: `POST /wp-json/deckwp/v1/install-batch`.
+  HMAC-protected via the existing `REST\Auth\HmacVerifier`.
+  Body shape: `{items: [{slug, type}, ...]}`. Caps batch size at
+  25 items (defense in depth — the dashboard's outbound trigger
+  already enforces its own limits, but a malicious or buggy
+  caller shouldn't be able to spin the install loop for minutes).
+- Bootstrap registers the new route via `REST\Server::registerRoutes()`
+  alongside the existing `/scan` route.
+
+### Compatibility
+- Requires WordPress 5.6+, PHP 7.4+
+- No breaking changes from v0.3.0
+- Wp.org plugins only in this release. Premium UltraPack catalog
+  support depends on the dashboard's catalog-client implementation
+  and a per-team `ultrapack_catalog_token` lifecycle, which lands
+  in a follow-up sprint.
+- Filesystem requirement: `Plugin_Upgrader` needs write access to
+  `wp-content/plugins/`. On hosts where `FS_METHOD` resolves to
+  `ftp` or `ssh2` without stored credentials, the upgrade returns
+  `unable_to_connect_to_filesystem` — surfaced verbatim so the
+  operator can fix `wp-config.php`.
+
 ## [0.3.0] — 2026-05-04
 
 ### Added
