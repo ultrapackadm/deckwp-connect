@@ -245,6 +245,12 @@ class Installer
             'destination'       => WP_PLUGIN_DIR,
             'clear_destination' => true,
             'clear_working'     => true,
+            // WP 6.5+ reads this key when clear_destination fails and
+            // emits an "Undefined array key" notice if it's missing.
+            // We don't have rollback semantics here (Sprint 4 owns
+            // that), so leave it false: if cleanup fails the upgrade
+            // returns a WP_Error and we surface it verbatim.
+            'remove_old_failed' => false,
             'is_multi'          => false,
             'hook_extra'        => [
                 'plugin' => $pluginFile,
