@@ -4,6 +4,30 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.5.0] — 2026-05-04
+
+### Added
+- `Install\Installer::installOne()` now accepts an optional
+  `download_url` field per item. When present, the upgrade routes
+  through `WP_Upgrader::run(['package' => $url, ...])` instead of
+  `Plugin_Upgrader::upgrade()`, bypassing the `update_plugins`
+  transient that the wp.org flow consults. `clear_destination=true`
+  preserves the atomic-replace semantics so the existing plugin
+  directory is wiped before extraction — no orphan files from the
+  prior version.
+
+  This is the connector half of the dashboard's premium-catalog
+  update flow: the dashboard resolves the download URL via the
+  team's UltraPack catalog token, forwards it as `download_url`
+  in the install-batch body, and the connector pulls the ZIP
+  directly from the catalog without ever seeing the token.
+
+### Compatibility
+- Requires WordPress 5.6+, PHP 7.4+
+- No breaking changes from v0.4.0
+- Free wp.org plugin updates work unchanged — the new branch only
+  fires when `download_url` is non-empty in the request body.
+
 ## [0.4.0] — 2026-05-04
 
 ### Added

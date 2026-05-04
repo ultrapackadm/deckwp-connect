@@ -99,6 +99,7 @@ class Installer
     {
         $slug = isset($item['slug']) ? (string) $item['slug'] : '';
         $type = isset($item['type']) ? (string) $item['type'] : 'plugin';
+        $downloadUrl = isset($item['download_url']) ? (string) $item['download_url'] : '';
 
         if ($slug === '') {
             return $this->failure('', 'Missing slug.');
@@ -108,7 +109,7 @@ class Installer
             // Theme + core support are explicit non-goals for v0.4.0.
             // The dashboard side filters these out before calling us;
             // this branch is just defense in depth.
-            return $this->failure($slug, sprintf('Unsupported type "%s" — v0.4.0 handles plugins only.', $type));
+            return $this->failure($slug, sprintf('Unsupported type "%s" — handles plugins only.', $type));
         }
 
         $pluginFile = $this->findPluginFile($slug);
@@ -118,7 +119,22 @@ class Installer
 
         $beforeVersion = $this->readPluginVersion($pluginFile);
 
-        $upgradeResult = $this->runUpgrade($pluginFile);
+        // Two upgrade paths:
+        //
+        // 1. download_url given → premium plugin from the UltraPack
+        //    catalog. The dashboard already resolved the URL with the
+        //    team's catalog token; we install directly from that URL
+        //    via WP_Upgrader::run() with our package, bypassing the
+        //    update_plugins transient.
+        //
+        // 2. download_url empty → free wp.org plugin. WP's standard
+        //    Plugin_Upgrader::upgrade() handles this — it reads the
+        //    update_plugins transient (which we refresh in install()
+        //    before calling installOne()) and downloads from
+        //    api.wordpress.org.
+        $upgradeResult = $downloadUrl !== ''
+            ? $this->runUpgradeFromUrl($pluginFile, $downloadUrl)
+            : $this->runUpgrade($pluginFile);
 
         // is_wp_error: a real failure inside the upgrader (ZIP download
         // failed, FS_METHOD is ftp without creds, etc).
@@ -206,6 +222,36 @@ class Installer
         $upgrader = new \Plugin_Upgrader(new \Automatic_Upgrader_Skin());
 
         return $upgrader->upgrade($pluginFile);
+    }
+
+    /**
+     * Upgrade from an explicit package URL (premium catalog flow).
+     *
+     * Uses {@see \WP_Upgrader::run()} directly with our `package`
+     * parameter, bypassing the update_plugins transient that
+     * {@see \Plugin_Upgrader::upgrade()} normally consults. Same
+     * `clear_destination=true` semantics so the existing plugin
+     * directory is replaced atomically — no orphan files from a
+     * previous version sitting around after a partial install.
+     *
+     * @return mixed True on success, false on no-op, WP_Error on failure.
+     */
+    private function runUpgradeFromUrl(string $pluginFile, string $packageUrl)
+    {
+        $upgrader = new \Plugin_Upgrader(new \Automatic_Upgrader_Skin());
+
+        return $upgrader->run([
+            'package'           => $packageUrl,
+            'destination'       => WP_PLUGIN_DIR,
+            'clear_destination' => true,
+            'clear_working'     => true,
+            'is_multi'          => false,
+            'hook_extra'        => [
+                'plugin' => $pluginFile,
+                'type'   => 'plugin',
+                'action' => 'update',
+            ],
+        ]);
     }
 
     private function loadCoreUpgraderClasses(): void
