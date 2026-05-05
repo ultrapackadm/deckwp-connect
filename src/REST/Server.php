@@ -6,6 +6,7 @@ defined('ABSPATH') || exit;
 
 use DeckWP\Connect\REST\Auth\HmacVerifier;
 use DeckWP\Connect\REST\Routes\InstallBatchRoute;
+use DeckWP\Connect\REST\Routes\RestoreBackupRoute;
 use DeckWP\Connect\REST\Routes\ScanRoute;
 
 /**
@@ -27,11 +28,13 @@ use DeckWP\Connect\REST\Routes\ScanRoute;
  *     batch of plugins. wp.org-only in v0.4.0; UltraPack premium
  *     catalog support lands when the dashboard's catalog client
  *     ships. {@see InstallBatchRoute}.
+ *   - POST /wp-json/deckwp/v1/restore-backup — restore a previously
+ *     captured plugin folder snapshot. Used by the dashboard's
+ *     manual Restore button and (Sprint 4 T4) by the auto-rollback
+ *     path. {@see RestoreBackupRoute}.
  *
  * ## Planned (Sprint 4+)
  *
- *   - POST /wp-json/deckwp/v1/update-batch — apply updates with
- *     pre-scan + post-scan safety net.
  *   - POST /wp-json/deckwp/v1/plugin-action — activate/deactivate/
  *     delete a single plugin.
  *   - POST /wp-json/deckwp/v1/maintenance — toggle the branded
@@ -54,14 +57,19 @@ class Server
     /** @var InstallBatchRoute */
     private $installBatchRoute;
 
+    /** @var RestoreBackupRoute */
+    private $restoreBackupRoute;
+
     public function __construct(
         HmacVerifier $verifier = null,
         ScanRoute $scanRoute = null,
-        InstallBatchRoute $installBatchRoute = null
+        InstallBatchRoute $installBatchRoute = null,
+        RestoreBackupRoute $restoreBackupRoute = null
     ) {
-        $this->verifier          = $verifier ?? new HmacVerifier();
-        $this->scanRoute         = $scanRoute ?? new ScanRoute();
-        $this->installBatchRoute = $installBatchRoute ?? new InstallBatchRoute();
+        $this->verifier           = $verifier ?? new HmacVerifier();
+        $this->scanRoute          = $scanRoute ?? new ScanRoute();
+        $this->installBatchRoute  = $installBatchRoute ?? new InstallBatchRoute();
+        $this->restoreBackupRoute = $restoreBackupRoute ?? new RestoreBackupRoute();
     }
 
     /**
@@ -90,6 +98,12 @@ class Server
             'deckwp/v1',
             '/install-batch',
             $this->installBatchRoute->args($permissionCallback)
+        );
+
+        register_rest_route(
+            'deckwp/v1',
+            '/restore-backup',
+            $this->restoreBackupRoute->args($permissionCallback)
         );
     }
 }

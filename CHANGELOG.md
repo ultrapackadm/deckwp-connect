@@ -4,6 +4,106 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.6.0] — 2026-05-04
+
+### Added
+
+- `Backup\BackupManager` — local plugin-folder snapshot manager.
+  `snapshot($slug)` zips `wp-content/plugins/<slug>/` into
+  `wp-content/uploads/deckwp-backups/<slug>-<ISO timestamp>-<rand>.zip`,
+  returns the path + SHA-256 + size for the dashboard to record.
+  `restore($abs, $slug, $expectedChecksum)` verifies the checksum,
+  extracts to a uniquely-named sibling, then atomically swaps the
+  live folder via move-old-aside / move-new-into-place — failure
+  rolls the original folder back from the aside.
+
+  Path-traversal defenses at every entry point: slug allowlist
+  regex, `realpath()` containment check on the resolved plugin
+  path, zip-slip sweep that rejects any entry name with `../` OR
+  outside the expected `<slug>/` root.
+
+- `REST\Routes\RestoreBackupRoute` — `POST /wp-json/deckwp/v1/restore-backup`.
+  HMAC-protected like every other route. Accepts
+  `{slug, local_path, checksum?}` and dispatches to
+  `BackupManager::restore()`. Maps validation-shaped failures
+  (checksum mismatch, path escape, zip layout unexpected) to 422
+  and unexpected filesystem failures to 500 — the dashboard's
+  `RemoteRestoreTrigger` consumes the `error_code` for typed UI
+  responses.
+
+- `Install\Installer` — the install-batch handler now accepts an
+  optional `backup_required: true` flag per item. When set, the
+  installer asks `BackupManager::snapshot()` before running the
+  upgrade. If the snapshot fails (disk full, plugin folder
+  unreadable), the upgrade is skipped — better to fail loudly
+  than to mutate live files without a rollback target. If the
+  snapshot succeeds, its metadata (`local_path`, `checksum`,
+  `size_bytes`) rides back in the per-item response under a new
+  `backup` sub-key for the dashboard to reconcile.
+
+### Storage
+
+- `wp-content/uploads/deckwp-backups/` is the managed directory.
+  `.htaccess` denies all on Apache; a blank `index.php` blanks
+  out directory listings on hosts whose default config still
+  honors `DirectoryIndex`. **Nginx note:** nginx ignores
+  `.htaccess` — operators on nginx should add an explicit deny
+  rule for that path in the server block:
+
+  ```nginx
+  location ~ ^/wp-content/uploads/deckwp-backups/ {
+      deny all;
+      access_log off;
+      log_not_found off;
+      return 404;
+  }
+  ```
+
+  The randomized 6-hex-char suffix in zip filenames defeats casual
+  enumeration even without the nginx rule, but defense-in-depth is
+  cheap.
+
+### Wire contract additions
+
+- Per-item input on `/install-batch`:
+
+  ```jsonc
+  {
+    "slug": "formidable-pro",
+    "type": "plugin",
+    "backup_required": true,                   // NEW (optional)
+    "download_url": "https://..."              // existing
+  }
+  ```
+
+- Per-item output on `/install-batch`:
+
+  ```jsonc
+  {
+    "slug": "formidable-pro",
+    "status": "installed",
+    "version_before": "6.29",
+    "version_after": "6.30.1",
+    "error": null,
+    "backup": {                                 // NEW (when snapshot ran + succeeded)
+      "local_path": "deckwp-backups/formidable-pro-2026-05-04T21-30-00-abc123.zip",
+      "checksum": "sha256-hex (64 chars)",
+      "size_bytes": 524288
+    }
+  }
+  ```
+
+### Compatibility
+
+- Requires WordPress 5.6+, PHP 7.4+, ZipArchive extension
+  (PHP 7.4 ships it by default; refused with `zip_unavailable`
+  error_code if missing).
+- No breaking changes from v0.5.0. Existing
+  `/install-batch` callers that don't set `backup_required` get
+  the v0.5.0 behavior unchanged — no `backup` key in the response.
+- The `/restore-backup` route is new; pre-v0.6.0 dashboards
+  haven't called it.
+
 ## [0.5.0] — 2026-05-04
 
 ### Added

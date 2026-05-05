@@ -4,6 +4,8 @@ namespace DeckWP\Connect\Install;
 
 defined('ABSPATH') || exit;
 
+use DeckWP\Connect\Backup\BackupManager;
+
 /**
  * Installs / upgrades plugins on the local WordPress install.
  *
@@ -18,8 +20,9 @@ defined('ABSPATH') || exit;
  * Input — array of items the dashboard wants installed/upgraded:
  *
  *     [
- *       ['slug' => 'akismet',       'type' => 'plugin'],
- *       ['slug' => 'wordpress-seo', 'type' => 'plugin'],
+ *       ['slug' => 'akismet',          'type' => 'plugin'],
+ *       ['slug' => 'wordpress-seo',    'type' => 'plugin', 'backup_required' => true],
+ *       ['slug' => 'avada',            'type' => 'plugin', 'download_url' => 'https://...'],
  *     ]
  *
  * Output — one result row per input item, in input order:
@@ -27,8 +30,27 @@ defined('ABSPATH') || exit;
  *     [
  *       ['slug' => '...', 'status' => 'installed'|'unchanged'|'failed',
  *        'version_before' => '5.2.0', 'version_after' => '5.4.0',
- *        'error' => null],
+ *        'error' => null,
+ *        // Present iff backup_required was true on the input item
+ *        // and snapshot succeeded:
+ *        'backup' => ['local_path' => '...', 'checksum' => '...', 'size_bytes' => 1234567]],
  *     ]
+ *
+ * ## Pre-update backup
+ *
+ * When the dashboard sends `backup_required: true` on an item, the
+ * Installer asks {@see BackupManager::snapshot()} for a zip of the
+ * live plugin folder BEFORE running the upgrade. If the snapshot
+ * fails (disk full, plugin folder unreadable, ZipArchive missing),
+ * the upgrade is skipped — better to fail loudly than to take a
+ * destructive action without a rollback target. If the snapshot
+ * succeeds, its metadata rides back in the response so the dashboard
+ * can flip the corresponding Backup row from `Created` to `Available`.
+ *
+ * Auto-rollback on failed upgrade lives in Sprint 4 T4 (still TODO).
+ * v1 of T3 produces the snapshot + records it; the upgrade itself
+ * either succeeds or returns a Failed status, and the operator
+ * triggers Restore manually for now.
  *
  * ## How the upgrade actually happens
  *
@@ -67,6 +89,14 @@ defined('ABSPATH') || exit;
  */
 class Installer
 {
+    /** @var BackupManager */
+    private $backupManager;
+
+    public function __construct(BackupManager $backupManager = null)
+    {
+        $this->backupManager = $backupManager ?? new BackupManager();
+    }
+
     /**
      * @param  array<int, array<string, mixed>>  $items
      * @return array<int, array<string, mixed>>
@@ -100,6 +130,7 @@ class Installer
         $slug = isset($item['slug']) ? (string) $item['slug'] : '';
         $type = isset($item['type']) ? (string) $item['type'] : 'plugin';
         $downloadUrl = isset($item['download_url']) ? (string) $item['download_url'] : '';
+        $backupRequired = ! empty($item['backup_required']);
 
         if ($slug === '') {
             return $this->failure('', 'Missing slug.');
@@ -118,6 +149,30 @@ class Installer
         }
 
         $beforeVersion = $this->readPluginVersion($pluginFile);
+
+        // Pre-update snapshot when the dashboard asked for one. We
+        // refuse to proceed with the upgrade if the snapshot fails —
+        // an upgrade without a rollback target is precisely what
+        // Sprint 4 exists to prevent.
+        $backupResult = null;
+        if ($backupRequired) {
+            $snapshot = $this->backupManager->snapshot($slug);
+            if (! ($snapshot['ok'] ?? false)) {
+                return $this->failure(
+                    $slug,
+                    sprintf(
+                        'Pre-update backup failed (%s): %s',
+                        (string) ($snapshot['error_code'] ?? 'unknown'),
+                        (string) ($snapshot['error'] ?? 'no detail')
+                    )
+                );
+            }
+            $backupResult = [
+                'local_path' => (string) $snapshot['local_path'],
+                'checksum'   => (string) $snapshot['checksum'],
+                'size_bytes' => (int) $snapshot['size_bytes'],
+            ];
+        }
 
         // Two upgrade paths:
         //
@@ -139,9 +194,9 @@ class Installer
         // is_wp_error: a real failure inside the upgrader (ZIP download
         // failed, FS_METHOD is ftp without creds, etc).
         if (is_wp_error($upgradeResult)) {
-            return $this->failure(
-                $slug,
-                $this->formatWpError($upgradeResult)
+            return $this->withBackup(
+                $this->failure($slug, $this->formatWpError($upgradeResult)),
+                $backupResult
             );
         }
 
@@ -149,24 +204,42 @@ class Installer
         // already at the latest version. Surface as `unchanged` so
         // the dashboard's Update row reflects reality.
         if ($upgradeResult === false) {
-            return [
+            return $this->withBackup([
                 'slug' => $slug,
                 'status' => 'unchanged',
                 'version_before' => $beforeVersion,
                 'version_after' => $beforeVersion,
                 'error' => null,
-            ];
+            ], $backupResult);
         }
 
         $afterVersion = $this->readPluginVersion($pluginFile);
 
-        return [
+        return $this->withBackup([
             'slug' => $slug,
             'status' => 'installed',
             'version_before' => $beforeVersion,
             'version_after' => $afterVersion,
             'error' => null,
-        ];
+        ], $backupResult);
+    }
+
+    /**
+     * Fold the backup metadata into the per-item response if a
+     * snapshot was taken. Keeps the failure/unchanged/installed
+     * branches above tidy and ensures the `backup` key is present
+     * iff the snapshot succeeded.
+     *
+     * @param  array<string, mixed>       $row
+     * @param  array<string, mixed>|null  $backup
+     * @return array<string, mixed>
+     */
+    private function withBackup(array $row, $backup): array
+    {
+        if ($backup !== null) {
+            $row['backup'] = $backup;
+        }
+        return $row;
     }
 
     /**
