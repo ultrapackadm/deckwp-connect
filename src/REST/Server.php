@@ -10,6 +10,7 @@ use DeckWP\Connect\REST\Routes\InstallBatchRoute;
 use DeckWP\Connect\REST\Routes\InventoryRoute;
 use DeckWP\Connect\REST\Routes\RestoreBackupRoute;
 use DeckWP\Connect\REST\Routes\ScanRoute;
+use DeckWP\Connect\REST\Routes\SsoLoginRoute;
 
 /**
  * Registers the connector's inbound REST API surface under the
@@ -41,8 +42,12 @@ use DeckWP\Connect\REST\Routes\ScanRoute;
  *     snapshot on demand (same payload as the cron heartbeat, but
  *     pull-shaped). Powers the dashboard's "Refresh now" button.
  *     {@see InventoryRoute}.
+ *   - GET  /wp-json/deckwp/v1/sso-login — consume a one-time SSO
+ *     login token from the URL query and log the operator in as
+ *     an administrator. Browser navigation, not HMAC-headers.
+ *     {@see SsoLoginRoute}.
  *
- * ## Planned (Sprint 4+)
+ * ## Planned
  *
  *   - POST /wp-json/deckwp/v1/plugin-action — activate/deactivate/
  *     delete a single plugin.
@@ -75,13 +80,17 @@ class Server
     /** @var InventoryRoute */
     private $inventoryRoute;
 
+    /** @var SsoLoginRoute */
+    private $ssoLoginRoute;
+
     public function __construct(
         HmacVerifier $verifier = null,
         ScanRoute $scanRoute = null,
         InstallBatchRoute $installBatchRoute = null,
         RestoreBackupRoute $restoreBackupRoute = null,
         DeleteBackupRoute $deleteBackupRoute = null,
-        InventoryRoute $inventoryRoute = null
+        InventoryRoute $inventoryRoute = null,
+        SsoLoginRoute $ssoLoginRoute = null
     ) {
         $this->verifier           = $verifier ?? new HmacVerifier();
         $this->scanRoute          = $scanRoute ?? new ScanRoute();
@@ -89,6 +98,7 @@ class Server
         $this->restoreBackupRoute = $restoreBackupRoute ?? new RestoreBackupRoute();
         $this->deleteBackupRoute  = $deleteBackupRoute ?? new DeleteBackupRoute();
         $this->inventoryRoute     = $inventoryRoute ?? new InventoryRoute();
+        $this->ssoLoginRoute      = $ssoLoginRoute ?? new SsoLoginRoute();
     }
 
     /**
@@ -135,6 +145,17 @@ class Server
             'deckwp/v1',
             '/inventory',
             $this->inventoryRoute->args($permissionCallback)
+        );
+
+        // SSO login is the one route NOT HMAC-header-protected —
+        // see SsoLoginRoute class docblock. The token in the query
+        // param IS the credential. We pass the verifier callback
+        // anyway for symmetry; the route ignores it (uses
+        // __return_true) and validates the token inside the handler.
+        register_rest_route(
+            'deckwp/v1',
+            '/sso-login',
+            $this->ssoLoginRoute->args($permissionCallback)
         );
     }
 }

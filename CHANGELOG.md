@@ -4,6 +4,73 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.10.0] — 2026-05-06
+
+### Added
+
+- `REST\Routes\SsoLoginRoute` — `GET /wp-json/deckwp/v1/sso-login`.
+  Consumes a one-time SSO login token from a URL query parameter
+  and logs the operator in as a WordPress administrator without
+  ever showing them the password.
+
+  Powers the dashboard's "Open wp-admin" button. Browser navigates
+  to the URL → connector validates the token → 302 redirect to
+  `/wp-admin/` with WP session cookies set as if the operator had
+  done a normal login (14-day TTL).
+
+### Why GET (not POST + HMAC headers)
+
+This is the one route NOT protected by the X-DeckWP-* HMAC
+headers. The browser navigates directly to the URL via
+window.open(); browsers don't carry custom request headers when
+following navigation. The token IS the signed credential, in
+the URL.
+
+Token format: `<unix_ts>.<jti>.<sig>` where `sig` is
+HMAC-SHA256(`<ts>.<jti>`, hmac_secret). Validated in three layers:
+
+1. Format + shape (3 parts, `ts` numeric, `jti` ≥16 chars,
+   `sig` 64 hex chars) — fails fast on garbage.
+2. Timestamp within 60s of `time()` — short window for any
+   stolen URL.
+3. HMAC matches stored `hmac_secret` — only the dashboard
+   that pairs with this site can mint valid tokens.
+
+### Anti-replay
+
+Consumed `jti`s are stashed in a 5-minute transient. Second
+use of the same jti returns 401 `token_replayed`. The dashboard
+side enforces `jti` UNIQUE on `sso_sessions.jti` independently
+— defense in depth across both layers.
+
+### Login user resolution
+
+Default: first user with role `administrator`, ordered by ID.
+Configurable via the `deckwp_sso_login_user_id` filter:
+
+```php
+add_filter('deckwp_sso_login_user_id', function ($user_id) {
+    return get_user_by('login', 'deckwp-audit')->ID;
+});
+```
+
+### Compatibility
+
+- WordPress 5.6+, PHP 7.4+
+- No breaking changes from v0.9.0
+- Sites without an existing administrator user → 401
+  `no_admin_user`. (Pathological case; every WP install has at
+  least one admin.)
+
+### Smoke-tested
+
+End-to-end against the dev test site:
+- Mint via `SsoTokenMinter` → curl the resulting URL → 302 to
+  /wp-admin/ with `wordpress_logged_in_*` cookies set.
+- Replay the same URL → 401 `token_replayed`.
+- Malformed token → 401 `malformed_token`.
+- Backdated `ts` → 401 `token_expired`.
+
 ## [0.9.0] — 2026-05-06
 
 ### Added
