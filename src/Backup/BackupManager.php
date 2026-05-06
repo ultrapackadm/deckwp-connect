@@ -253,6 +253,54 @@ class BackupManager
         return ['ok' => true];
     }
 
+    /**
+     * Delete a previously-snapshotted zip from disk. Used by the
+     * dashboard's retention cron once a backup is past its
+     * `expires_at` cutoff — the zip stops being useful (the
+     * dashboard already moved on) but eats disk on the customer
+     * server until something cleans it up.
+     *
+     * Idempotent: returns ok=true if the file is already gone
+     * (the dashboard might re-issue a delete after a transient
+     * failure, and the second call must not surface as a fault).
+     *
+     * Path is validated to live inside the managed
+     * deckwp-backups/ directory before unlinking — same
+     * defense-in-depth posture as restore().
+     *
+     * @return array<string, mixed>
+     */
+    public function delete(string $absoluteZipPath): array
+    {
+        $backupDir = $this->ensureBackupsDir();
+        if ($backupDir === null) {
+            return $this->fail('backup_dir_unresolved', 'Could not resolve the deckwp-backups/ directory.');
+        }
+
+        $resolvedBackupDir = realpath($backupDir);
+        if ($resolvedBackupDir === false) {
+            return $this->fail('backup_dir_unresolved', 'Could not realpath the deckwp-backups/ directory.');
+        }
+
+        $resolvedZip = realpath($absoluteZipPath);
+        if ($resolvedZip === false) {
+            // File is already gone — treat as success so the
+            // dashboard can mark the row Expired without retrying
+            // forever on a no-op.
+            return ['ok' => true, 'already_gone' => true];
+        }
+
+        if (strncmp($resolvedZip, $resolvedBackupDir, strlen($resolvedBackupDir)) !== 0) {
+            return $this->fail('path_escape', 'Backup zip path is outside the managed backups directory.');
+        }
+
+        if (! @unlink($resolvedZip)) {
+            return $this->fail('unlink_failed', 'Could not unlink the zip — file may be locked or permissions are wrong.');
+        }
+
+        return ['ok' => true];
+    }
+
     /* --------------------------------------------------------------
      | Internals
      |-------------------------------------------------------------- */

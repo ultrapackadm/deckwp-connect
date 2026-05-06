@@ -4,6 +4,42 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.8.0] — 2026-05-06
+
+### Added
+
+- `Backup\BackupManager::delete($absoluteZipPath)` — unlinks a
+  previously-snapshotted zip from disk. Idempotent: returns
+  `ok=true` with `already_gone=true` when the file is already
+  missing, so a retrying retention sweep never gets stuck on a
+  no-op. Path-escape guard (realpath containment under
+  deckwp-backups/) mirrors restore().
+
+- `REST\Routes\DeleteBackupRoute` — `POST /wp-json/deckwp/v1/delete-backup`.
+  HMAC-protected. Accepts `{local_path}` (relative to WP uploads
+  basedir) and dispatches to BackupManager::delete(). 422 for
+  validation-shaped failures (path escape), 500 for unexpected
+  filesystem errors. Powers the dashboard's daily retention
+  sweeper (Sprint 4 T6) — backups past `expires_at` get their
+  zip deleted on the customer server, then the dashboard flips
+  the row to Expired.
+
+### Compatibility
+
+- WordPress 5.6+, PHP 7.4+, ZipArchive
+- No breaking changes from v0.7.0
+- Pre-v0.8.0 dashboards never call /delete-backup; the route is
+  ignored when not in use.
+
+### Smoke-tested
+
+End-to-end via `php artisan backups:sweep` against the dev test
+site: 4 expired backups deleted from disk, all 4 rows flipped to
+Expired, 1 orphan Running Update marked Failed, 1 orphan Created
+Backup marked Failed. Disk went from 5 zips to 0 (one true orphan
+zip without a DB row got cleaned manually — out of scope for the
+sweeper, which only acts on rows it knows about).
+
 ## [0.7.0] — 2026-05-05
 
 ### Added

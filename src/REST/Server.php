@@ -5,6 +5,7 @@ namespace DeckWP\Connect\REST;
 defined('ABSPATH') || exit;
 
 use DeckWP\Connect\REST\Auth\HmacVerifier;
+use DeckWP\Connect\REST\Routes\DeleteBackupRoute;
 use DeckWP\Connect\REST\Routes\InstallBatchRoute;
 use DeckWP\Connect\REST\Routes\RestoreBackupRoute;
 use DeckWP\Connect\REST\Routes\ScanRoute;
@@ -32,6 +33,9 @@ use DeckWP\Connect\REST\Routes\ScanRoute;
  *     captured plugin folder snapshot. Used by the dashboard's
  *     manual Restore button and (Sprint 4 T4) by the auto-rollback
  *     path. {@see RestoreBackupRoute}.
+ *   - POST /wp-json/deckwp/v1/delete-backup — delete an expired
+ *     snapshot zip from disk. Idempotent. Used by the dashboard's
+ *     retention sweeper (Sprint 4 T6). {@see DeleteBackupRoute}.
  *
  * ## Planned (Sprint 4+)
  *
@@ -60,16 +64,21 @@ class Server
     /** @var RestoreBackupRoute */
     private $restoreBackupRoute;
 
+    /** @var DeleteBackupRoute */
+    private $deleteBackupRoute;
+
     public function __construct(
         HmacVerifier $verifier = null,
         ScanRoute $scanRoute = null,
         InstallBatchRoute $installBatchRoute = null,
-        RestoreBackupRoute $restoreBackupRoute = null
+        RestoreBackupRoute $restoreBackupRoute = null,
+        DeleteBackupRoute $deleteBackupRoute = null
     ) {
         $this->verifier           = $verifier ?? new HmacVerifier();
         $this->scanRoute          = $scanRoute ?? new ScanRoute();
         $this->installBatchRoute  = $installBatchRoute ?? new InstallBatchRoute();
         $this->restoreBackupRoute = $restoreBackupRoute ?? new RestoreBackupRoute();
+        $this->deleteBackupRoute  = $deleteBackupRoute ?? new DeleteBackupRoute();
     }
 
     /**
@@ -104,6 +113,12 @@ class Server
             'deckwp/v1',
             '/restore-backup',
             $this->restoreBackupRoute->args($permissionCallback)
+        );
+
+        register_rest_route(
+            'deckwp/v1',
+            '/delete-backup',
+            $this->deleteBackupRoute->args($permissionCallback)
         );
     }
 }
