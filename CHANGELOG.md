@@ -4,6 +4,86 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.7.0] — 2026-05-05
+
+### Added
+
+- `Smoke\PostUpdateChecker` — fast, offline-by-default health check
+  run after every successful upgrade. Three signals:
+
+  1. Plugin folder + main file still exist on disk.
+  2. Plugin main file passes a PHP token-parse check (catches
+     half-extracted ZIPs, truncated downloads, syntax errors in
+     a freshly-installed file).
+  3. If the plugin was active before the upgrade, it must still
+     be active after — WP silently auto-deactivates on
+     activation-time fatals, and that's exactly the failure
+     mode this catches.
+
+  Optional fourth signal (opt-in via `smoke_check_home: true` on
+  the install-batch item): wp_remote_head() to the home page
+  must not return 5xx. Off by default — sites with basic auth or
+  maintenance walls would produce false positives.
+
+- **Auto-rollback** in `Install\Installer`. When the smoke check
+  fails AND a pre-update snapshot was taken (Sprint 4 T3), the
+  installer immediately calls `BackupManager::restore()` and
+  reports `status: rolled_back` to the dashboard with a
+  `rollback_reason` field. The dashboard's `UpdateOrchestrator`
+  picks that up, transitions the Update row to
+  `UpdateStatus::RolledBack`, marks the linked Backup as
+  Restored, and leaves `installed_version` at the pre-upgrade
+  value (since the restore put the old folder back).
+
+  Without a snapshot, smoke failure surfaces as `status: failed`
+  with the reason verbatim — operator handles it manually.
+
+### Wire contract additions
+
+Per-item input on `/install-batch`:
+
+```jsonc
+{
+  "slug": "formidable-pro",
+  "type": "plugin",
+  "backup_required": true,
+  "smoke_check_home": true                 // NEW (optional, default false)
+}
+```
+
+Per-item output on `/install-batch` adds a `rolled_back` status:
+
+```jsonc
+{
+  "slug": "formidable-pro",
+  "status": "rolled_back",
+  "version_before": "6.29",
+  "version_after": "6.29",                 // restored
+  "error": "Post-upgrade smoke check failed (...): ...",
+  "rollback_reason": "plugin_inactive_after_upgrade",
+  "backup": { ... }                        // still present, snapshot is now consumed
+}
+```
+
+### Compatibility
+
+- WordPress 5.6+, PHP 7.4+, ZipArchive extension
+- No breaking changes from v0.6.0
+- Callers that skip `backup_required` get the v0.5.0 behavior;
+  smoke check still runs on successful upgrades and marks them
+  `failed` (without auto-rollback) if anything's broken — strictly
+  better than v0.5.0's "report installed even when site is down"
+  behavior.
+
+### Dev-only kill switch
+
+Touching `wp-content/uploads/.deckwp-force-smoke-fail` (any contents)
+forces the smoke check to return failure on the next upgrade. Used
+by the manual smoke harness to validate the rollback path without
+producing a real fault. Do NOT ship this file in any production
+deploy — it's not surfaced anywhere in the UI and is checked
+unconditionally at the top of the smoke flow.
+
 ## [0.6.0] — 2026-05-04
 
 ### Added

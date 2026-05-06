@@ -5,6 +5,7 @@ namespace DeckWP\Connect\Install;
 defined('ABSPATH') || exit;
 
 use DeckWP\Connect\Backup\BackupManager;
+use DeckWP\Connect\Smoke\PostUpdateChecker;
 
 /**
  * Installs / upgrades plugins on the local WordPress install.
@@ -92,9 +93,13 @@ class Installer
     /** @var BackupManager */
     private $backupManager;
 
-    public function __construct(BackupManager $backupManager = null)
+    /** @var PostUpdateChecker */
+    private $smokeChecker;
+
+    public function __construct(BackupManager $backupManager = null, PostUpdateChecker $smokeChecker = null)
     {
         $this->backupManager = $backupManager ?? new BackupManager();
+        $this->smokeChecker  = $smokeChecker ?? new PostUpdateChecker();
     }
 
     /**
@@ -131,6 +136,11 @@ class Installer
         $type = isset($item['type']) ? (string) $item['type'] : 'plugin';
         $downloadUrl = isset($item['download_url']) ? (string) $item['download_url'] : '';
         $backupRequired = ! empty($item['backup_required']);
+        // `smoke_check_home` is opt-in: the dashboard sends true only
+        // for sites whose home page is known to return 2xx without
+        // basic auth or maintenance walls. False positives there are
+        // worse than missing the signal.
+        $smokeCheckHome = ! empty($item['smoke_check_home']);
 
         if ($slug === '') {
             return $this->failure('', 'Missing slug.');
@@ -149,6 +159,13 @@ class Installer
         }
 
         $beforeVersion = $this->readPluginVersion($pluginFile);
+
+        // Snapshot the active state BEFORE the upgrade so the smoke
+        // check can compare. Plugin_Upgrader sometimes re-activates
+        // the plugin automatically and sometimes doesn't (depends on
+        // whether activation throws); a side-by-side compare is the
+        // only reliable signal.
+        $wasActive = $this->isPluginActive($pluginFile);
 
         // Pre-update snapshot when the dashboard asked for one. We
         // refuse to proceed with the upgrade if the snapshot fails —
@@ -215,6 +232,21 @@ class Installer
 
         $afterVersion = $this->readPluginVersion($pluginFile);
 
+        // Post-update smoke check — folder + main file PHP validity
+        // + activation state survived. If something's broken AND
+        // we have a snapshot, auto-rollback right here so the site
+        // is never left in a fatal state. Without a snapshot, we
+        // surface the smoke failure and let the operator decide.
+        $smokeResult = $this->smokeChecker->verify($slug, $pluginFile, $wasActive, $smokeCheckHome);
+        if (! ($smokeResult['ok'] ?? false)) {
+            return $this->handleSmokeFailure(
+                $slug,
+                $beforeVersion,
+                $smokeResult,
+                $backupResult
+            );
+        }
+
         return $this->withBackup([
             'slug' => $slug,
             'status' => 'installed',
@@ -222,6 +254,110 @@ class Installer
             'version_after' => $afterVersion,
             'error' => null,
         ], $backupResult);
+    }
+
+    /**
+     * Smoke check failed after a successful upgrade. If we have a
+     * snapshot we just took, restore it and return `rolled_back`.
+     * If we don't, return `failed` with the smoke reason — the
+     * operator has to handle it manually because there's no path
+     * back to a known-good state.
+     *
+     * @param  array<string, mixed>       $smokeResult
+     * @param  array<string, mixed>|null  $backupResult
+     * @return array<string, mixed>
+     */
+    private function handleSmokeFailure(string $slug, string $beforeVersion, array $smokeResult, $backupResult): array
+    {
+        $reason = (string) ($smokeResult['reason'] ?? 'unknown');
+        $detail = (string) ($smokeResult['detail'] ?? 'no detail');
+
+        if ($backupResult === null) {
+            // No snapshot to restore from. The plugin is left in
+            // whatever state the upgrade produced; surface the
+            // smoke reason verbatim so the dashboard can flag
+            // this as a "manual intervention required" failure.
+            return $this->failure(
+                $slug,
+                sprintf('Post-upgrade smoke check failed (%s) and no pre-update snapshot is available to roll back from: %s', $reason, $detail)
+            );
+        }
+
+        // Resolve the local_path the snapshot returned (relative to
+        // uploads basedir) back to absolute, then ask BackupManager
+        // to restore.
+        $absoluteZip = $this->absoluteFromUploadsRelative((string) $backupResult['local_path']);
+        if ($absoluteZip === null) {
+            return $this->withBackup(
+                $this->failure($slug, sprintf(
+                    'Post-upgrade smoke check failed (%s: %s) and could not resolve the snapshot path for rollback.',
+                    $reason,
+                    $detail
+                )),
+                $backupResult
+            );
+        }
+
+        $restore = $this->backupManager->restore(
+            $absoluteZip,
+            $slug,
+            (string) ($backupResult['checksum'] ?? '')
+        );
+
+        if (! ($restore['ok'] ?? false)) {
+            // Snapshot existed but restore itself failed. This is the
+            // worst-case path — site is now in a broken state and
+            // we can't recover automatically. Surface both errors.
+            return $this->withBackup(
+                $this->failure($slug, sprintf(
+                    'Post-upgrade smoke check failed (%s: %s) AND auto-rollback failed (%s: %s). Site needs manual recovery.',
+                    $reason,
+                    $detail,
+                    (string) ($restore['error_code'] ?? 'unknown'),
+                    (string) ($restore['error'] ?? 'no detail')
+                )),
+                $backupResult
+            );
+        }
+
+        // Restore succeeded. The plugin folder is back to its
+        // pre-upgrade state. Report `rolled_back` so the dashboard
+        // can settle the Update row to UpdateStatus::RolledBack and
+        // mark the Backup as Restored.
+        return $this->withBackup([
+            'slug' => $slug,
+            'status' => 'rolled_back',
+            'version_before' => $beforeVersion,
+            'version_after' => $beforeVersion,
+            'error' => sprintf('Post-upgrade smoke check failed (%s): %s', $reason, $detail),
+            'rollback_reason' => $reason,
+        ], $backupResult);
+    }
+
+    /** Convert a `deckwp-backups/foo.zip` relative path to absolute. */
+    private function absoluteFromUploadsRelative(string $relative): ?string
+    {
+        if (! function_exists('wp_get_upload_dir')) {
+            return null;
+        }
+        $uploads = wp_get_upload_dir();
+        $base = rtrim((string) ($uploads['basedir'] ?? ''), '/\\');
+        if ($base === '') {
+            return null;
+        }
+        return $base . '/' . ltrim($relative, '/\\');
+    }
+
+    /**
+     * Wrapper around WP's `is_plugin_active()` that loads the admin
+     * helper if it isn't already loaded (REST/cron contexts).
+     */
+    private function isPluginActive(string $pluginFile): bool
+    {
+        if (! function_exists('is_plugin_active')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        return function_exists('is_plugin_active') && (bool) is_plugin_active($pluginFile);
     }
 
     /**
