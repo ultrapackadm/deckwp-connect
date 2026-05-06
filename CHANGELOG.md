@@ -4,6 +4,68 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.11.0] — 2026-05-06
+
+### Added
+
+- `Maintenance\MaintenanceManager` — enable/disable + state
+  for the dashboard-driven maintenance toggle. State lives in a
+  JSON lock file at `wp-content/uploads/deckwp-maintenance.lock`
+  (deliberately NOT wp-options, so the page is reachable even
+  with a corrupt DB). Auto-expires when `ends_at` passes; 24h
+  hard ceiling per enable to dodge "operator forgot to flip it
+  back" failures.
+
+- `Maintenance\MaintenanceGuard` — `init` priority 1 hook that
+  reads the lock file and short-circuits non-bypass requests
+  with a 503 + branded HTML page. Bypass list:
+  - REST API (`/wp-json/*` and `?rest_route=`) — the dashboard
+    MUST keep talking to the connector during maintenance,
+    including the `/maintenance` toggle itself.
+  - WP admin pages — operators with `manage_options` keep
+    working on the site while the public face is down.
+  - WP CLI + cron.
+  - `/wp-login.php` so operators can authenticate during a
+    long maintenance window.
+
+  Page styling is inline CSS, no theme dependency, no plugin
+  asset URL resolution — the whole 503 must render even when
+  the rest of WP is half-broken. `Retry-After` header set from
+  `ends_at` so well-behaved bots back off; `noindex` to keep
+  search engines from caching the holding page.
+
+- `REST\Routes\MaintenanceRoute` — `GET` returns current state,
+  `POST` flips on/off:
+  ```jsonc
+  POST /wp-json/deckwp/v1/maintenance
+  { "enabled": true, "minutes": 30, "message": "Be back soon", "started_by": "ops@example.com" }
+  ```
+  Both HMAC-protected like every other route. 422 on duration
+  out of range (1..1440 minutes).
+
+### Wiring
+
+`Bootstrap` now adds `MaintenanceGuard::maybeIntercept()` on
+the `init` action at priority 1 so we short-circuit before any
+plugin/theme starts frontend work.
+
+### Compatibility
+
+- WordPress 5.6+, PHP 7.4+
+- No breaking changes from v0.10.0
+- Pre-v0.11.0 dashboards never call `/maintenance`; the lock
+  file stays absent and the guard always passes through.
+
+### Smoke-tested
+
+End-to-end against the dev test site:
+- Frontend pre-toggle → HTTP 200.
+- Toggle on via `RemoteMaintenanceTrigger` (5 minutes,
+  custom message) → frontend HTTP 503 with the branded page,
+  custom message rendered, `Retry-After: 289` header set;
+  REST API still HTTP 200.
+- Toggle off → frontend HTTP 200 again.
+
 ## [0.10.0] — 2026-05-06
 
 ### Added

@@ -8,6 +8,7 @@ use DeckWP\Connect\REST\Auth\HmacVerifier;
 use DeckWP\Connect\REST\Routes\DeleteBackupRoute;
 use DeckWP\Connect\REST\Routes\InstallBatchRoute;
 use DeckWP\Connect\REST\Routes\InventoryRoute;
+use DeckWP\Connect\REST\Routes\MaintenanceRoute;
 use DeckWP\Connect\REST\Routes\RestoreBackupRoute;
 use DeckWP\Connect\REST\Routes\ScanRoute;
 use DeckWP\Connect\REST\Routes\SsoLoginRoute;
@@ -46,6 +47,10 @@ use DeckWP\Connect\REST\Routes\SsoLoginRoute;
  *     login token from the URL query and log the operator in as
  *     an administrator. Browser navigation, not HMAC-headers.
  *     {@see SsoLoginRoute}.
+ *   - POST /wp-json/deckwp/v1/maintenance — toggle the
+ *     dashboard-driven maintenance mode on/off.
+ *   - GET  /wp-json/deckwp/v1/maintenance — read current state.
+ *     {@see MaintenanceRoute}.
  *
  * ## Planned
  *
@@ -83,6 +88,9 @@ class Server
     /** @var SsoLoginRoute */
     private $ssoLoginRoute;
 
+    /** @var MaintenanceRoute */
+    private $maintenanceRoute;
+
     public function __construct(
         HmacVerifier $verifier = null,
         ScanRoute $scanRoute = null,
@@ -90,7 +98,8 @@ class Server
         RestoreBackupRoute $restoreBackupRoute = null,
         DeleteBackupRoute $deleteBackupRoute = null,
         InventoryRoute $inventoryRoute = null,
-        SsoLoginRoute $ssoLoginRoute = null
+        SsoLoginRoute $ssoLoginRoute = null,
+        MaintenanceRoute $maintenanceRoute = null
     ) {
         $this->verifier           = $verifier ?? new HmacVerifier();
         $this->scanRoute          = $scanRoute ?? new ScanRoute();
@@ -99,6 +108,7 @@ class Server
         $this->deleteBackupRoute  = $deleteBackupRoute ?? new DeleteBackupRoute();
         $this->inventoryRoute     = $inventoryRoute ?? new InventoryRoute();
         $this->ssoLoginRoute      = $ssoLoginRoute ?? new SsoLoginRoute();
+        $this->maintenanceRoute   = $maintenanceRoute ?? new MaintenanceRoute();
     }
 
     /**
@@ -156,6 +166,12 @@ class Server
             'deckwp/v1',
             '/sso-login',
             $this->ssoLoginRoute->args($permissionCallback)
+        );
+
+        register_rest_route(
+            'deckwp/v1',
+            '/maintenance',
+            $this->maintenanceRoute->args($permissionCallback)
         );
     }
 }
