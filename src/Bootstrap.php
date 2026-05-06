@@ -4,6 +4,7 @@ namespace DeckWP\Connect;
 
 defined('ABSPATH') || exit;
 
+use DeckWP\Connect\DropIn\Installer as DropInInstaller;
 use DeckWP\Connect\Heartbeat\Scheduler as HeartbeatScheduler;
 use DeckWP\Connect\Maintenance\MaintenanceGuard;
 use DeckWP\Connect\REST\Server as RestServer;
@@ -38,13 +39,19 @@ use DeckWP\Connect\Settings\Page as SettingsPage;
  *                                    with a 503 branded page when
  *                                    the dashboard has toggled
  *                                    maintenance mode on.
+ *   - DropIn\Installer           — idempotently installs (or refreshes)
+ *                                  `wp-content/fatal-error-handler.php`
+ *                                  from the bundled source. Foreign
+ *                                  drop-ins are detected and skipped.
+ *                                  Slice 1 of the multisite-aware
+ *                                  fatal-handling rollout.
  *
  * ## Subsystems planned (per CLAUDE.md, will be wired in upcoming sprints)
  *
  *   - Transport\InitHookFallback — bypass when /wp-json is blocked by host
- *   - DropIn\Installer           — installs wp-content/fatal-error-handler.php
  *   - Whitelabel\Branding        — rewrites plugin row metadata
  *   - Updater\SelfUpdater        — pulls connector self-updates
+ *   - Updater\UpdateSuppressor   — hides "update available" for managed slugs
  *
  * ## Singleton
  *
@@ -96,5 +103,27 @@ class Bootstrap
         // class docblock for the full exemption list.
         $maintenanceGuard = new MaintenanceGuard();
         add_action('init', [$maintenanceGuard, 'maybeIntercept'], 1);
+
+        // Fatal handler drop-in — idempotently ensures
+        // wp-content/fatal-error-handler.php is our managed source.
+        // Foreign drop-ins (host-installed, third-party plugins) are
+        // detected via marker grep and left alone. Failures are
+        // logged to error_log only; we deliberately don't break boot
+        // if the install can't run, since the plugin still does
+        // useful work (heartbeat, REST, etc.) without it.
+        $this->ensureFatalDropIn();
+    }
+
+    private function ensureFatalDropIn(): void
+    {
+        $result = (new DropInInstaller())->install();
+        if (empty($result['ok'])) {
+            error_log(
+                '[DeckWP Connect] Fatal handler drop-in install skipped: '
+                . ($result['error_code'] ?? 'unknown')
+                . ' — '
+                . ($result['error'] ?? '')
+            );
+        }
     }
 }

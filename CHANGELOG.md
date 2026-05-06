@@ -4,6 +4,51 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `DropIn\Installer` + bundled `dropin/handler-source.php` — Slice 1
+  of the multisite-aware fatal-handler rollout. Idempotently writes
+  `wp-content/fatal-error-handler.php` from a managed source on every
+  `plugins_loaded`. Foreign drop-ins (host-installed, third-party
+  plugin) are detected via marker grep (`DECKWP_FATAL_HANDLER_MARKER`)
+  and **never** overwritten.
+
+  Classification logic (`absent` / `ours` / `foreign`) is text-only —
+  we deliberately do NOT `require` the foreign file to inspect its
+  constants, since a malformed third-party drop-in could crash the
+  connector during boot, which is the exact failure mode this feature
+  exists to fix.
+
+  This slice is install plumbing only. The drop-in's `handle()` method
+  currently delegates to WP's default (`parent::handle()`); subsequent
+  slices add:
+
+  1. Single-site detection — longest-prefix-match on the error trace
+     against `active_plugins`, log to `deckwp_fatal_log` option (cap 50),
+     auto-deactivate offending plugin.
+  2. Multisite — `switch_to_blog` loop across the network to find which
+     site has the bad plugin. **This is the Manage GPL gap** that
+     becomes our differentiator on the comparison table.
+  3. Memory-exhaustion branch + branded 503 splash (mirrors the
+     MaintenanceGuard's inline-CSS pattern, no theme dependency).
+
+  Wired into `Bootstrap::run()` after the existing subsystems.
+  Install failures are logged to `error_log()` only — the connector
+  keeps booting normally so the rest of the plugin still functions
+  on hosts where wp-content/ is unwritable (rare, but possible on
+  some shared hosts with chrooted FS).
+
+### Compatibility
+
+- WordPress 5.2+ (when WP introduced `wp_register_fatal_error_handler`).
+  On pre-5.2 the source file's `class_exists('WP_Fatal_Error_Handler')`
+  guard requires the core class explicitly.
+- PHP 7.4+, no new dependencies.
+- Pre-Unreleased dashboards continue working — drop-in is install
+  plumbing, no wire-protocol change yet.
+
 ## [0.11.0] — 2026-05-06
 
 ### Added
