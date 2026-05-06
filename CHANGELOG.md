@@ -4,6 +4,46 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.9.0] — 2026-05-06
+
+### Added
+
+- `REST\Routes\InventoryRoute` — `POST /wp-json/deckwp/v1/inventory`.
+  HMAC-protected. Returns the same payload shape as the cron-driven
+  heartbeat, on demand. Powers the dashboard's "Refresh now" button:
+  the operator just installed/deleted/activated a plugin in WP admin
+  and doesn't want to wait up to 5 minutes for the next heartbeat
+  tick to reconcile the inventory.
+
+  Response payload:
+
+  ```jsonc
+  {
+    "event":        "inventory",
+    "sent_at":      1717684800,
+    "wp_version":   "6.6.2",
+    "php_version":  "8.3.10",
+    "site_url":     "https://example.com",
+    "is_multisite": false,
+    "plugins":      [
+      { "slug": "akismet", "name": "Akismet", "version": "5.6", "active": true },
+      ...
+    ]
+  }
+  ```
+
+  The `event` field reads "inventory" rather than "heartbeat" for
+  log readability. The dashboard's HeartbeatProcessor doesn't
+  inspect the field — both push (cron) and pull (this route)
+  paths share the merge logic on the dashboard side.
+
+### Compatibility
+
+- WordPress 5.6+, PHP 7.4+, ZipArchive
+- No breaking changes from v0.8.1
+- Pre-v0.9.0 dashboards never call /inventory; the route is
+  ignored when not in use.
+
 ## [0.8.1] — 2026-05-06
 
 ### Fixed

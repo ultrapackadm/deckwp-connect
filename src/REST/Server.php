@@ -7,6 +7,7 @@ defined('ABSPATH') || exit;
 use DeckWP\Connect\REST\Auth\HmacVerifier;
 use DeckWP\Connect\REST\Routes\DeleteBackupRoute;
 use DeckWP\Connect\REST\Routes\InstallBatchRoute;
+use DeckWP\Connect\REST\Routes\InventoryRoute;
 use DeckWP\Connect\REST\Routes\RestoreBackupRoute;
 use DeckWP\Connect\REST\Routes\ScanRoute;
 
@@ -36,6 +37,10 @@ use DeckWP\Connect\REST\Routes\ScanRoute;
  *   - POST /wp-json/deckwp/v1/delete-backup — delete an expired
  *     snapshot zip from disk. Idempotent. Used by the dashboard's
  *     retention sweeper (Sprint 4 T6). {@see DeleteBackupRoute}.
+ *   - POST /wp-json/deckwp/v1/inventory — return a fresh inventory
+ *     snapshot on demand (same payload as the cron heartbeat, but
+ *     pull-shaped). Powers the dashboard's "Refresh now" button.
+ *     {@see InventoryRoute}.
  *
  * ## Planned (Sprint 4+)
  *
@@ -67,18 +72,23 @@ class Server
     /** @var DeleteBackupRoute */
     private $deleteBackupRoute;
 
+    /** @var InventoryRoute */
+    private $inventoryRoute;
+
     public function __construct(
         HmacVerifier $verifier = null,
         ScanRoute $scanRoute = null,
         InstallBatchRoute $installBatchRoute = null,
         RestoreBackupRoute $restoreBackupRoute = null,
-        DeleteBackupRoute $deleteBackupRoute = null
+        DeleteBackupRoute $deleteBackupRoute = null,
+        InventoryRoute $inventoryRoute = null
     ) {
         $this->verifier           = $verifier ?? new HmacVerifier();
         $this->scanRoute          = $scanRoute ?? new ScanRoute();
         $this->installBatchRoute  = $installBatchRoute ?? new InstallBatchRoute();
         $this->restoreBackupRoute = $restoreBackupRoute ?? new RestoreBackupRoute();
         $this->deleteBackupRoute  = $deleteBackupRoute ?? new DeleteBackupRoute();
+        $this->inventoryRoute     = $inventoryRoute ?? new InventoryRoute();
     }
 
     /**
@@ -119,6 +129,12 @@ class Server
             'deckwp/v1',
             '/delete-backup',
             $this->deleteBackupRoute->args($permissionCallback)
+        );
+
+        register_rest_route(
+            'deckwp/v1',
+            '/inventory',
+            $this->inventoryRoute->args($permissionCallback)
         );
     }
 }
