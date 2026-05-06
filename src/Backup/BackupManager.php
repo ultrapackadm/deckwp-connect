@@ -89,15 +89,44 @@ class BackupManager
             return $this->fail('plugins_dir_unresolved', 'Could not resolve the wp-content/plugins/ directory.');
         }
 
+        // Two valid plugin layouts on disk:
+        //
+        //   1. Folder plugin: wp-content/plugins/<slug>/<slug>.php (+ siblings)
+        //      The common case. Most plugins from wp.org and every
+        //      premium plugin from the UltraPack catalog.
+        //
+        //   2. Single-file plugin: wp-content/plugins/<slug>.php
+        //      The Hello Dolly pattern — a leftover from WP's earliest
+        //      days. The slug WP uses (`hello`) doesn't have a folder;
+        //      the file is named `hello.php` directly under plugins/.
+        //
+        // We snapshot both. Folder plugins go through zipDirectory()
+        // as before; single-file plugins go through a special path
+        // that wraps the lone file in a `<slug>/` virtual folder
+        // inside the zip, so restore() can still expect a uniform
+        // layout (the folder shape on extract).
         $sourceDir = $pluginsDir . '/' . $slug;
-        if (! is_dir($sourceDir)) {
-            return $this->fail('plugin_not_found', sprintf('Plugin folder "%s" does not exist under wp-content/plugins/.', $slug));
+        $singleFile = $pluginsDir . '/' . $slug . '.php';
+
+        $isFolder = is_dir($sourceDir);
+        $isSingleFile = ! $isFolder && is_file($singleFile);
+
+        if (! $isFolder && ! $isSingleFile) {
+            return $this->fail(
+                'plugin_not_found',
+                sprintf(
+                    'Plugin "%s" does not exist under wp-content/plugins/ — looked for both a folder (%s/) and a single-file plugin (%s.php).',
+                    $slug,
+                    $slug,
+                    $slug
+                )
+            );
         }
 
-        // realpath() returns false for non-existent paths — guarded
-        // above. The check here ensures symlinks / .. inside the
-        // path can't pull us out of plugins/.
-        $resolvedSource = realpath($sourceDir);
+        // realpath() containment guard against symlink / .. escapes.
+        // Same defense for both layouts; we just feed a different
+        // resolved path depending on what we found.
+        $resolvedSource = realpath($isFolder ? $sourceDir : $singleFile);
         $resolvedPluginsDir = realpath($pluginsDir);
         if ($resolvedSource === false
             || $resolvedPluginsDir === false
@@ -106,12 +135,14 @@ class BackupManager
             return $this->fail('path_escape', 'Resolved plugin path is outside wp-content/plugins/.');
         }
 
-        $sizeBytes = $this->dirSizeBytes($resolvedSource);
+        $sizeBytes = $isFolder
+            ? $this->dirSizeBytes($resolvedSource)
+            : (int) @filesize($resolvedSource);
         if ($sizeBytes > self::MAX_PLUGIN_DIR_BYTES) {
             return $this->fail(
                 'plugin_too_large',
                 sprintf(
-                    'Plugin folder is %d bytes — over the %d-byte snapshot ceiling. Snapshot refused to avoid filling disk.',
+                    'Plugin is %d bytes — over the %d-byte snapshot ceiling. Snapshot refused to avoid filling disk.',
                     $sizeBytes,
                     self::MAX_PLUGIN_DIR_BYTES
                 )
@@ -125,7 +156,9 @@ class BackupManager
 
         $targetZip = $backupDir . '/' . $this->buildZipName($slug);
 
-        $zipResult = $this->zipDirectory($resolvedSource, $slug, $targetZip);
+        $zipResult = $isFolder
+            ? $this->zipDirectory($resolvedSource, $slug, $targetZip)
+            : $this->zipSingleFile($resolvedSource, $slug, $targetZip);
         if (! $zipResult['ok']) {
             // Belt and suspenders — drop the partial zip if any.
             if (file_exists($targetZip)) {
@@ -219,6 +252,23 @@ class BackupManager
             return $this->fail('zip_layout_unexpected', sprintf('Backup zip did not contain a top-level "%s/" folder — refusing to restore.', $slug));
         }
 
+        // Detect single-file plugin layout: zip contains exactly
+        // one file at `<slug>/<slug>.php` and no other entries. The
+        // restore target on disk is `wp-content/plugins/<slug>.php`,
+        // not a folder. Both cases share the move-aside / move-new
+        // / rollback choreography but differ in which path becomes
+        // the live target.
+        $singleFile = $this->detectSingleFilePlugin($extractedSlugDir, $slug);
+
+        if ($singleFile !== null) {
+            return $this->restoreSingleFile(
+                $tempExtractDir,
+                $singleFile,
+                $pluginsDir,
+                $slug
+            );
+        }
+
         $liveTarget = $pluginsDir . '/' . $slug;
         $aside = $pluginsDir . '/.deckwp-old-' . $slug . '-' . bin2hex(random_bytes(4));
 
@@ -248,6 +298,70 @@ class BackupManager
         $this->recursiveDelete($tempExtractDir);
         if ($hadLive) {
             $this->recursiveDelete($aside);
+        }
+
+        return ['ok' => true];
+    }
+
+    /**
+     * Detect single-file plugin layout in an extracted snapshot.
+     * Returns the absolute path of the single PHP file when the
+     * extracted dir contains exactly one entry that's a *.php
+     * file; null otherwise (folder plugin, multi-file).
+     */
+    private function detectSingleFilePlugin(string $extractedSlugDir, string $slug): ?string
+    {
+        $entries = @scandir($extractedSlugDir);
+        if ($entries === false) {
+            return null;
+        }
+        $real = array_values(array_filter($entries, fn ($e) => $e !== '.' && $e !== '..'));
+        if (count($real) !== 1) {
+            return null;
+        }
+        $candidate = $extractedSlugDir . '/' . $real[0];
+        if (! is_file($candidate)) {
+            return null;
+        }
+        if (substr(strtolower($real[0]), -4) !== '.php') {
+            return null;
+        }
+        return $candidate;
+    }
+
+    /**
+     * Restore a single-file plugin (Hello Dolly pattern). The
+     * live target is `wp-content/plugins/<filename>.php`, not a
+     * folder — same move-aside / move-new / rollback dance as
+     * the folder path, just on a file.
+     *
+     * @return array<string, mixed>
+     */
+    private function restoreSingleFile(string $tempExtractDir, string $extractedFile, string $pluginsDir, string $slug): array
+    {
+        $filename = basename($extractedFile);
+        $liveTarget = $pluginsDir . '/' . $filename;
+        $aside = $pluginsDir . '/.deckwp-old-' . $slug . '-' . bin2hex(random_bytes(4)) . '.php';
+
+        $hadLive = file_exists($liveTarget);
+        if ($hadLive) {
+            if (! @rename($liveTarget, $aside)) {
+                $this->recursiveDelete($tempExtractDir);
+                return $this->fail('rename_failed', 'Could not move the live single-file plugin aside before restore.');
+            }
+        }
+
+        if (! @rename($extractedFile, $liveTarget)) {
+            if ($hadLive) {
+                @rename($aside, $liveTarget);
+            }
+            $this->recursiveDelete($tempExtractDir);
+            return $this->fail('rename_failed', 'Could not move the extracted single-file plugin into place; rolled back.');
+        }
+
+        $this->recursiveDelete($tempExtractDir);
+        if ($hadLive) {
+            @unlink($aside);
         }
 
         return ['ok' => true];
@@ -345,6 +459,41 @@ class BackupManager
         } catch (\Throwable $e) {
             $zip->close();
             return ['ok' => false, 'error_code' => 'zip_iteration_failed', 'error' => 'Iteration failed: ' . $e->getMessage()];
+        }
+
+        if (! $zip->close()) {
+            return ['ok' => false, 'error_code' => 'zip_close_failed', 'error' => 'ZipArchive::close() returned false; zip likely incomplete.'];
+        }
+
+        return ['ok' => true];
+    }
+
+    /**
+     * Zip a single-file plugin (Hello Dolly pattern). The lone
+     * `<slug>.php` file goes into the zip under `<slug>/<slug>.php`
+     * so the on-disk zip layout is uniform with folder plugins —
+     * restore() can rely on the same `<slug>/` top-level entry
+     * shape either way and decide single-file vs folder based on
+     * the zip's contents (one file ⇔ single-file plugin).
+     *
+     * @return array{ok: bool, error?: string, error_code?: string}
+     */
+    private function zipSingleFile(string $sourceFile, string $rootName, string $targetZip): array
+    {
+        if (! class_exists('\\ZipArchive')) {
+            return ['ok' => false, 'error_code' => 'zip_unavailable', 'error' => 'PHP ZipArchive extension not loaded.'];
+        }
+
+        $zip = new \ZipArchive();
+        $opened = $zip->open($targetZip, \ZipArchive::CREATE | \ZipArchive::OVERWRITE);
+        if ($opened !== true) {
+            return ['ok' => false, 'error_code' => 'zip_open_failed', 'error' => 'Could not open zip for writing (code ' . (int) $opened . ').'];
+        }
+
+        $entryName = $rootName . '/' . basename($sourceFile);
+        if (! $zip->addFile($sourceFile, $entryName)) {
+            $zip->close();
+            return ['ok' => false, 'error_code' => 'zip_add_failed', 'error' => 'Could not add file to zip: ' . $entryName];
         }
 
         if (! $zip->close()) {

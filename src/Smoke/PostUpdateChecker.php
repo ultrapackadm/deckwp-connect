@@ -56,14 +56,22 @@ class PostUpdateChecker
      */
     public function verify(string $slug, ?string $pluginFile, bool $wasActive, bool $checkHome = false): array
     {
-        // Folder existence: most basic invariant.
+        // Folder OR single-file existence: most basic invariant.
+        // WP supports two layouts (see BackupManager class docblock).
+        // For "hello", the plugin lives at plugins/hello.php with no
+        // folder — checking only is_dir() would false-positive every
+        // upgrade of every single-file plugin.
         $pluginsDir = $this->pluginsDir();
         if ($pluginsDir === null) {
             return $this->fail('plugins_dir_unresolved', 'Could not resolve wp-content/plugins/.');
         }
         $folder = $pluginsDir . '/' . $slug;
-        if (! is_dir($folder)) {
-            return $this->fail('plugin_folder_missing', sprintf('Plugin folder "%s" is gone after upgrade.', $slug));
+        $singleFile = $pluginsDir . '/' . $slug . '.php';
+        if (! is_dir($folder) && ! is_file($singleFile)) {
+            return $this->fail(
+                'plugin_folder_missing',
+                sprintf('Plugin "%s" is gone after upgrade — no folder and no single-file plugin found.', $slug)
+            );
         }
 
         // Main file existence + PHP token validity. We don't try to

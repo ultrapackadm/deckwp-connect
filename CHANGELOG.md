@@ -4,6 +4,46 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.8.1] — 2026-05-06
+
+### Fixed
+
+- `Backup\BackupManager::snapshot()` now handles single-file
+  plugins (the Hello Dolly pattern: `wp-content/plugins/hello.php`
+  with no `hello/` folder). Previously snapshot returned
+  `plugin_not_found`, blocking any update flow that set
+  `backup_required: true` on single-file slugs. The dashboard's
+  bulk Update-all action exposed this in real-world use — every
+  Hello-Dolly-shaped plugin would Fail with the snapshot error
+  before the upgrade itself could even attempt.
+
+  Snapshot now zips `hello.php` as `hello/hello.php` inside the
+  zip so the restore-side layout is uniform with folder plugins.
+  Restore detects the single-file pattern (zip with exactly one
+  `<slug>/<slug>.php` entry) and uses a file-level move-aside /
+  move-new / rollback dance instead of the folder-level one.
+  Both layouts share the path-escape and atomicity guards.
+
+- `Smoke\PostUpdateChecker::verify()` now treats either a folder
+  OR a single-file plugin file as "still on disk". Same
+  motivation: verify() was false-positive-failing post-upgrade
+  for single-file plugins because it only checked is_dir().
+
+### Compatibility
+
+- WordPress 5.6+, PHP 7.4+, ZipArchive
+- No breaking changes from v0.8.0
+- Pre-v0.8.1 zips that captured folder plugins continue to
+  restore correctly — the single-file detection is opt-in based
+  on the actual zip contents, not metadata.
+
+### Smoke-tested
+
+End-to-end against Hello Dolly on the dev test site: snapshot
+produced a 1.4 KB zip with one entry `hello/hello.php`; live
+file overwritten with a marker; restore put the v1.7.2 file
+back byte-for-byte (sha matched the original).
+
 ## [0.8.0] — 2026-05-06
 
 ### Added
