@@ -29,18 +29,30 @@
  *      longest-prefix-match against active_plugins, log to
  *      deckwp_fatal_log (capped 50).
  *
- *   ✅ Slice 3 (this slice): multisite — three-tier search across
+ *   ✅ Slice 3: multisite — three-tier search across
  *      active_sitewide_plugins → current blog → switch_to_blog loop.
- *      Log storage moved to get_site_option/update_site_option so a
- *      single network-wide log feeds the dashboard regardless of
- *      which blog tripped the fatal. Log entry now carries `scope`
- *      ('single'|'network'|'blog'|'multisite' for the no-match case)
- *      and `blog_id` (for scope=blog). Closes the Manage-GPL gap on
- *      the comparison table ("Multisite fatal handler · ✓ full"
- *      vs Manage GPL "× skipped").
+ *      Log storage moved to update_site_option (network-wide). Log
+ *      entry gained `scope` and `blog_id`. Closed the Manage-GPL gap
+ *      on the comparison table.
  *
- *   🚧 Slice 4: memory-exhaustion branch + branded 503 splash to
- *      replace WP's generic "experiencing technical difficulties".
+ *   ✅ Slice 4 (this slice):
+ *        a) Memory-exhaustion detection — flag `oom: true` on log
+ *           entries whose `message` contains "Allowed memory size"
+ *           or "Out of memory". The dashboard can then surface those
+ *           differently (memory tuning hint vs. plugin bug).
+ *        b) Branded 503 splash — when we successfully identified +
+ *           deactivated a culprit, render a self-contained HTML page
+ *           explaining what happened, with a "Refresh page" button
+ *           and a Retry-After: 5 header. No theme dependency; no
+ *           plugin-asset URLs. Mirrors the MaintenanceGuard's inline
+ *           CSS pattern so it renders even when the rest of WP is
+ *           half-broken. When we couldn't identify a culprit the
+ *           drop-in delegates to parent::handle() so the operator
+ *           still gets the WP recovery flow with the trace.
+ *
+ *   🚧 Slice 5: /backup-create endpoint + UltraHub integration so
+ *      operators can request a manual backup ("snapshot before
+ *      shipping the deactivate") from the dashboard.
  *
  * @package DeckWP\Connect
  */
@@ -56,7 +68,7 @@ if (! defined('DECKWP_DROPIN_VERSION')) {
     // detects "ours but stale" and rewrites the file with the new
     // source. Slice-suffix is informational; the byte diff is what
     // actually triggers the upgrade.
-    define('DECKWP_DROPIN_VERSION', '0.12.0-slice3');
+    define('DECKWP_DROPIN_VERSION', '0.12.0-slice4');
 }
 
 if (! class_exists('WP_Fatal_Error_Handler')) {
@@ -68,15 +80,9 @@ if (! class_exists('WP_Fatal_Error_Handler')) {
 }
 
 /**
- * Multisite-aware fatal handler with longest-prefix culprit detection
- * and auto-deactivate.
- *
- * Single-site (Slice 2) remains the fast path — one option read, one
- * option write. Multisite (Slice 3) walks active_sitewide_plugins
- * first (network-active is the most common multisite shape), then
- * the current blog, then every other blog via switch_to_blog. Memory
- * exhaustion is treated identically to other E_ERRORs for now;
- * Slice 4 adds the dedicated branch + branded 503.
+ * Multisite-aware fatal handler with longest-prefix culprit detection,
+ * auto-deactivate, OOM detection, and a branded 503 splash for the
+ * identified-and-deactivated path.
  */
 class DeckWP_Fatal_Error_Handler extends WP_Fatal_Error_Handler
 {
@@ -100,14 +106,26 @@ class DeckWP_Fatal_Error_Handler extends WP_Fatal_Error_Handler
         try {
             $error = $this->detect_error();
             if (is_array($error) && ! empty($error['file'])) {
-                if (is_multisite()) {
-                    $this->deckwpHandleMultisite($error);
-                } else {
-                    $this->deckwpHandleSingleSite($error);
+                $isOom = $this->deckwpDetectOom($error);
+
+                $logEntry = is_multisite()
+                    ? $this->deckwpHandleMultisite($error, $isOom)
+                    : $this->deckwpHandleSingleSite($error, $isOom);
+
+                // Render the branded splash only when we both identified
+                // and successfully deactivated a culprit. Anything else
+                // (no plugin_path, deactivate failed) falls through to
+                // parent::handle() so the operator gets the full WP
+                // recovery flow with the trace and recovery email.
+                if (
+                    is_array($logEntry)
+                    && ! empty($logEntry['plugin_path'])
+                    && ! empty($logEntry['deactivated'])
+                ) {
+                    $this->deckwpRenderBrandedSplash($logEntry);
+                    return;
                 }
             }
-            // Slice 4 hook: memory-exhaustion detection + branded splash
-            // will branch ahead of parent::handle() once landed.
         } catch (\Throwable $e) {
             // Last-ditch: log to error_log and continue. Never let our
             // bookkeeping crash the recovery page.
@@ -121,8 +139,10 @@ class DeckWP_Fatal_Error_Handler extends WP_Fatal_Error_Handler
      * Single-site path: search active_plugins, deactivate, log.
      *
      * @param array $error Shape from WP_Fatal_Error_Handler::detect_error().
+     * @param bool  $isOom Whether the error is a memory-exhaustion fatal.
+     * @return array The log entry that was appended.
      */
-    protected function deckwpHandleSingleSite(array $error)
+    protected function deckwpHandleSingleSite(array $error, $isOom)
     {
         $relative    = $this->deckwpRelativePluginPath((string) $error['file']);
         $culprit     = null;
@@ -136,62 +156,58 @@ class DeckWP_Fatal_Error_Handler extends WP_Fatal_Error_Handler
             }
         }
 
-        $this->deckwpAppendLog(
-            $this->deckwpBuildLogEntry($error, $culprit, $deactivated, 'single')
-        );
+        $entry = $this->deckwpBuildLogEntry($error, $culprit, $deactivated, 'single', null, $isOom);
+        $this->deckwpAppendLog($entry);
+        return $entry;
     }
 
     /**
      * Multisite path. Three-tier search:
      *
-     *   1. Network-active plugins (active_sitewide_plugins) — single
-     *      registry shared by every blog, most common multisite shape.
-     *   2. Current blog (cheap: no switch needed).
-     *   3. Every other blog via switch_to_blog loop.
+     *   1. Network-active plugins (active_sitewide_plugins) — most
+     *      common multisite shape, single registry shared by every blog.
+     *   2. Current blog — get_current_blog_id() + get_option.
+     *   3. switch_to_blog loop across every other blog.
      *
      * First match wins. If nothing matches, log without plugin_path.
      *
-     * @param array $error Shape from WP_Fatal_Error_Handler::detect_error().
+     * @return array The log entry that was appended.
      */
-    protected function deckwpHandleMultisite(array $error)
+    protected function deckwpHandleMultisite(array $error, $isOom)
     {
         $relative = $this->deckwpRelativePluginPath((string) $error['file']);
 
         if ($relative === null) {
-            // Error file is outside WP_PLUGIN_DIR — log and bail.
-            $this->deckwpAppendLog(
-                $this->deckwpBuildLogEntry($error, null, false, 'multisite')
-            );
-            return;
+            $entry = $this->deckwpBuildLogEntry($error, null, false, 'multisite', null, $isOom);
+            $this->deckwpAppendLog($entry);
+            return $entry;
         }
 
-        // 1. Network-active plugins.
+        // 1. Network-active.
         $sitewide       = (array) get_site_option('active_sitewide_plugins', []);
         $networkCulprit = $this->deckwpLongestPrefixMatch($relative, array_keys($sitewide));
         if ($networkCulprit !== null) {
             $deactivated = $this->deckwpDeactivateNetworkPlugin($networkCulprit);
-            $this->deckwpAppendLog(
-                $this->deckwpBuildLogEntry($error, $networkCulprit, $deactivated, 'network')
-            );
-            return;
+            $entry       = $this->deckwpBuildLogEntry($error, $networkCulprit, $deactivated, 'network', null, $isOom);
+            $this->deckwpAppendLog($entry);
+            return $entry;
         }
 
-        // 2. Current blog (most likely culprit when network-active didn't match).
+        // 2. Current blog.
         $currentBlogId = function_exists('get_current_blog_id') ? (int) get_current_blog_id() : 0;
         $culprit       = $this->deckwpFindCulpritOnBlog($relative, $currentBlogId);
         if ($culprit !== null) {
             $deactivated = $this->deckwpDeactivatePluginOnBlog($culprit, $currentBlogId);
-            $this->deckwpAppendLog(
-                $this->deckwpBuildLogEntry($error, $culprit, $deactivated, 'blog', $currentBlogId)
-            );
-            return;
+            $entry       = $this->deckwpBuildLogEntry($error, $culprit, $deactivated, 'blog', $currentBlogId, $isOom);
+            $this->deckwpAppendLog($entry);
+            return $entry;
         }
 
-        // 3. switch_to_blog loop across every other blog.
+        // 3. switch_to_blog loop.
         if (function_exists('get_sites')) {
             $blogIds = get_sites([
                 'fields' => 'ids',
-                'number' => 0, // all sites; do NOT cap
+                'number' => 0,
             ]);
             foreach ($blogIds as $blogId) {
                 $blogId = (int) $blogId;
@@ -201,30 +217,45 @@ class DeckWP_Fatal_Error_Handler extends WP_Fatal_Error_Handler
                 $culprit = $this->deckwpFindCulpritOnBlog($relative, $blogId);
                 if ($culprit !== null) {
                     $deactivated = $this->deckwpDeactivatePluginOnBlog($culprit, $blogId);
-                    $this->deckwpAppendLog(
-                        $this->deckwpBuildLogEntry($error, $culprit, $deactivated, 'blog', $blogId)
-                    );
-                    return;
+                    $entry       = $this->deckwpBuildLogEntry($error, $culprit, $deactivated, 'blog', $blogId, $isOom);
+                    $this->deckwpAppendLog($entry);
+                    return $entry;
                 }
             }
         }
 
-        // 4. No match anywhere — log with plugin_path null. Operator
-        // (or future Slice 4 logic) decides what to do.
-        $this->deckwpAppendLog(
-            $this->deckwpBuildLogEntry($error, null, false, 'multisite')
-        );
+        // 4. No match.
+        $entry = $this->deckwpBuildLogEntry($error, null, false, 'multisite', null, $isOom);
+        $this->deckwpAppendLog($entry);
+        return $entry;
+    }
+
+    /**
+     * Detect memory-exhaustion fatals. PHP emits two recognizable
+     * messages:
+     *
+     *   - "Allowed memory size of <N> bytes exhausted (tried to
+     *     allocate <M> bytes)" — the standard Zend allocator OOM.
+     *   - "Out of memory (allocated <N>) (tried to allocate <M>
+     *     bytes)" — emitted when malloc() itself fails.
+     *
+     * Either form is interesting enough to surface separately in the
+     * dashboard (operators tend to want a memory-tuning recommendation
+     * rather than a plugin-bug ticket).
+     *
+     * @return bool
+     */
+    protected function deckwpDetectOom(array $error)
+    {
+        $message = isset($error['message']) ? (string) $error['message'] : '';
+        return strpos($message, 'Allowed memory size') !== false
+            || strpos($message, 'Out of memory') !== false;
     }
 
     /**
      * Path of the error file relative to WP_PLUGIN_DIR, or null when
      * the file lives outside the plugins tree (theme code, mu-plugins,
      * core). Used by both single-site and multisite paths.
-     *
-     * Path normalization: error files on Windows arrive with backslashes,
-     * active_plugins entries are always forward-slash. wp_normalize_path()
-     * bridges them; we manually fall back when WP isn't loaded enough to
-     * provide it (extreme-early-failure mode).
      *
      * @return string|null
      */
@@ -242,7 +273,6 @@ class DeckWP_Fatal_Error_Handler extends WP_Fatal_Error_Handler
         }
 
         return substr($errorFile, strlen($pluginDir) + 1);
-        // Shape: 'slug/sub/file.php' OR 'single.php'
     }
 
     /**
@@ -267,7 +297,6 @@ class DeckWP_Fatal_Error_Handler extends WP_Fatal_Error_Handler
             }
 
             if (strpos($pluginPath, '/') === false) {
-                // Standalone single-file plugin — must match exactly.
                 if ($relative === $pluginPath) {
                     return $pluginPath;
                 }
@@ -305,8 +334,6 @@ class DeckWP_Fatal_Error_Handler extends WP_Fatal_Error_Handler
     /**
      * Remove a plugin from the current site's active_plugins option.
      * Returns true when the option was actually modified.
-     *
-     * @return bool
      */
     protected function deckwpDeactivatePlugin($pluginPath)
     {
@@ -315,16 +342,12 @@ class DeckWP_Fatal_Error_Handler extends WP_Fatal_Error_Handler
         if ($idx === false) {
             return false;
         }
-
         unset($active[$idx]);
         return (bool) update_option('active_plugins', array_values($active));
     }
 
     /**
      * Remove a plugin from a specific blog's active_plugins option.
-     * Wraps deckwpDeactivatePlugin in a switch_to_blog/restore pair.
-     *
-     * @return bool
      */
     protected function deckwpDeactivatePluginOnBlog($pluginPath, $blogId)
     {
@@ -339,8 +362,6 @@ class DeckWP_Fatal_Error_Handler extends WP_Fatal_Error_Handler
 
     /**
      * Remove a plugin from the network's active_sitewide_plugins.
-     *
-     * @return bool
      */
     protected function deckwpDeactivateNetworkPlugin($pluginPath)
     {
@@ -353,13 +374,13 @@ class DeckWP_Fatal_Error_Handler extends WP_Fatal_Error_Handler
     }
 
     /**
-     * Build the structured log entry. Caller passes `scope` so single,
-     * network, and per-blog matches can be told apart in the dashboard.
-     * `blog_id` only present when scope === 'blog'.
+     * Build the structured log entry. `blog_id` only present when
+     * scope === 'blog'; `oom` only present when the fatal was a
+     * memory-exhaustion fatal.
      *
      * @return array
      */
-    protected function deckwpBuildLogEntry(array $error, $pluginPath, $deactivated, $scope, $blogId = null)
+    protected function deckwpBuildLogEntry(array $error, $pluginPath, $deactivated, $scope, $blogId = null, $isOom = false)
     {
         $message = isset($error['message']) ? (string) $error['message'] : '';
         if (strlen($message) > self::MESSAGE_TRUNCATE) {
@@ -379,14 +400,16 @@ class DeckWP_Fatal_Error_Handler extends WP_Fatal_Error_Handler
         if ($blogId !== null) {
             $entry['blog_id'] = (int) $blogId;
         }
+        if ($isOom) {
+            $entry['oom'] = true;
+        }
         return $entry;
     }
 
     /**
      * Append an entry to the network-wide deckwp_fatal_log, trimmed
      * to the cap. update_site_option falls back to update_option on
-     * single-site automatically, so this works in both topologies
-     * with no extra branching.
+     * single-site automatically.
      */
     protected function deckwpAppendLog(array $entry)
     {
@@ -402,14 +425,143 @@ class DeckWP_Fatal_Error_Handler extends WP_Fatal_Error_Handler
 
     /**
      * Cross-platform path normalization. wp_normalize_path() may not
-     * be available in extreme-early-failure modes; fall back to a
-     * minimal manual normalize so the handler can still run.
+     * be available in extreme-early-failure modes; manual fallback
+     * keeps the handler running.
      */
     protected function deckwpNormalizePath($path)
     {
         return function_exists('wp_normalize_path')
             ? wp_normalize_path($path)
             : str_replace('\\', '/', $path);
+    }
+
+    /**
+     * Render the branded 503 splash. Called from handle() only when
+     * we identified AND successfully deactivated a culprit; other
+     * cases delegate to parent::handle() (default WP recovery flow).
+     *
+     * Self-contained: inline CSS, inline SVG, no asset URL resolution,
+     * no theme dependency. Mirrors the MaintenanceGuard pattern so
+     * the page renders even with a half-broken WP environment.
+     */
+    protected function deckwpRenderBrandedSplash(array $logEntry)
+    {
+        if (! headers_sent()) {
+            if (function_exists('status_header')) {
+                status_header(503);
+            } else {
+                header('HTTP/1.1 503 Service Unavailable', true, 503);
+            }
+            if (function_exists('nocache_headers')) {
+                nocache_headers();
+            }
+            header('Retry-After: 5');
+            header('Content-Type: text/html; charset=UTF-8');
+            header('X-Robots-Tag: noindex, nofollow');
+        }
+
+        $isOom    = ! empty($logEntry['oom']);
+        $slug     = isset($logEntry['plugin_path']) ? (string) $logEntry['plugin_path'] : '';
+        $blogPart = isset($logEntry['blog_id']) ? ' (blog #' . (int) $logEntry['blog_id'] . ')' : '';
+
+        echo $this->deckwpSplashHtml($slug, $isOom, $blogPart);
+    }
+
+    /**
+     * Build the splash HTML. Returns a complete HTML document so
+     * `echo` from the caller is the entire response body. All
+     * dynamic data is htmlspecialchars-escaped.
+     */
+    protected function deckwpSplashHtml($slug, $isOom, $blogPart)
+    {
+        $slugEsc     = htmlspecialchars($slug, ENT_QUOTES, 'UTF-8');
+        $blogPartEsc = htmlspecialchars($blogPart, ENT_QUOTES, 'UTF-8');
+
+        if ($isOom) {
+            $heading = 'Memory limit reached';
+            $body    = sprintf(
+                'A plugin (<code>%s</code>%s) exceeded the available PHP memory and was automatically disabled. The rest of the site keeps working — refresh this page to continue.',
+                $slugEsc,
+                $blogPartEsc
+            );
+        } else {
+            $heading = 'Plugin error contained';
+            $body    = sprintf(
+                'A plugin (<code>%s</code>%s) raised an unrecoverable error and was automatically disabled. The rest of the site keeps working — refresh this page to continue.',
+                $slugEsc,
+                $blogPartEsc
+            );
+        }
+
+        $headingEsc = htmlspecialchars($heading, ENT_QUOTES, 'UTF-8');
+
+        return <<<HTML
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>$headingEsc</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<style>
+* { box-sizing: border-box; }
+body {
+    margin: 0; min-height: 100vh;
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: #1f2937; background: linear-gradient(135deg, #f9fafb 0%, #eef2ff 100%);
+    display: flex; align-items: center; justify-content: center; padding: 2rem;
+}
+.card {
+    width: 100%; max-width: 540px; background: #ffffff; padding: 2.75rem 2.5rem;
+    border-radius: 14px; box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+    text-align: center;
+}
+.icon { color: #4f46e5; margin: 0 auto 1.25rem; display: block; }
+.badge {
+    display: inline-block; background: #fef3c7; color: #92400e;
+    padding: 0.25rem 0.75rem; border-radius: 999px;
+    font-size: 0.7rem; font-weight: 700; letter-spacing: 0.04em;
+    text-transform: uppercase; margin-bottom: 1rem;
+}
+h1 { font-size: 1.5rem; margin: 0 0 0.75rem; color: #111827; line-height: 1.3; }
+p { color: #4b5563; margin: 0 0 1.75rem; }
+code {
+    background: #f3f4f6; color: #4f46e5; padding: 0.1rem 0.4rem;
+    border-radius: 4px; font-size: 0.875em;
+    font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+.btn {
+    display: inline-block; background: #4f46e5; color: #ffffff;
+    padding: 0.7rem 1.5rem; border: 0; border-radius: 8px;
+    font-size: 0.95rem; font-weight: 600; text-decoration: none;
+    cursor: pointer; transition: background 0.15s;
+}
+.btn:hover { background: #4338ca; }
+.footer {
+    margin-top: 2rem; padding-top: 1.5rem; border-top: 1px solid #e5e7eb;
+    font-size: 0.8125rem; color: #6b7280;
+}
+.footer strong { color: #4b5563; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="card">
+    <svg class="icon" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+        <path d="M2 17l10 5 10-5"/>
+        <path d="M2 12l10 5 10-5"/>
+    </svg>
+    <span class="badge">Auto-recovered</span>
+    <h1>$headingEsc</h1>
+    <p>$body</p>
+    <a href="javascript:location.reload();" class="btn">Refresh page</a>
+    <div class="footer">
+        Protected by <strong>DeckWP</strong>
+    </div>
+</div>
+</body>
+</html>
+HTML;
     }
 }
 

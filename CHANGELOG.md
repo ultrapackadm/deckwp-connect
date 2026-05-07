@@ -112,6 +112,51 @@ versioning follows [SemVer](https://semver.org/).
   mechanism as Slice 2 — `plugins_loaded` runs the Installer, byte
   diff triggers the upgrade.
 
+- **Memory-exhaustion detection + branded 503 splash** — Slice 4 of
+  the rollout. Two complementary additions:
+
+  **OOM detection**: `handle()` now flags log entries whose `message`
+  matches `Allowed memory size of <N> bytes exhausted` or `Out of
+  memory (allocated <N>)` with `oom: true`. The dashboard can render
+  these differently from regular E_ERRORs (memory tuning hint vs.
+  plugin bug ticket). Detection is one strpos() per fatal — cheap.
+
+  **Branded splash**: when the handler successfully *both* identified
+  a culprit *and* deactivated it, render a self-contained 503 page
+  in place of WP's default "experiencing technical difficulties"
+  template. The page tells the visitor what happened in plain
+  English, surfaces the slug that was disabled (and `(blog #N)` on
+  multisite), and offers a "Refresh page" button. Headers:
+
+  ```
+  HTTP/1.1 503 Service Unavailable
+  Retry-After: 5
+  X-Robots-Tag: noindex, nofollow
+  Content-Type: text/html; charset=UTF-8
+  Cache-Control: no-cache, no-store, must-revalidate (via nocache_headers)
+  ```
+
+  Self-contained: inline CSS, inline SVG, no asset URL resolution,
+  no theme dependency. Mirrors the `MaintenanceGuard` pattern so
+  the page renders even when the rest of WP is half-broken.
+
+  When we *couldn't* identify a culprit (error file outside
+  `WP_PLUGIN_DIR` — theme code, mu-plugins, core), or when we
+  identified one but `update_option` refused the deactivate (rare;
+  DB-side fatal scenarios), the drop-in delegates to
+  `parent::handle()` so the operator still gets the WP recovery
+  flow with the trace and recovery email. We don't lie with a
+  "everything is fine, refresh" splash when we haven't actually
+  fixed anything.
+
+  Refactor: `deckwpHandleSingleSite` and `deckwpHandleMultisite`
+  now *return* the log entry they appended, so `handle()` can decide
+  whether to render the splash. Same code paths as Slice 3, just
+  routed through a return value.
+
+  Drop-in version bumped to `0.12.0-slice4`. Auto-rewrite triggered
+  on next `plugins_loaded` via byte-equal diff.
+
 ### Compatibility
 
 - WordPress 5.2+ (when WP introduced `wp_register_fatal_error_handler`).
