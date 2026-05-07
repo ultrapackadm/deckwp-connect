@@ -31,8 +31,21 @@ use DeckWP\Connect\Storage\Settings;
  *         {"slug":"akismet","name":"Akismet…","version":"5.3.4","active":true,
  *          "update_available":false,"new_version":null,"plugin_file":"akismet/akismet.php"},
  *         …
+ *       ],
+ *       "fatal_log": [
+ *         { "ts": 1717684800, "type": 1, "file": "...", "line": 42,
+ *           "message": "Call to undefined function ...",
+ *           "plugin_path": "buggy/buggy.php", "deactivated": true,
+ *           "scope": "single" },
+ *         …
  *       ]
  *     }
+ *
+ * The `fatal_log` array carries the rolling deckwp_fatal_log option
+ * the drop-in writes (Slice 4 of KILLER #1, capped at 50 entries).
+ * The dashboard de-duplicates entries by `ts` against its own
+ * `last_fatal_seen_ts` watermark — we ship the full log on every
+ * heartbeat and let the dashboard decide what's new.
  *
  * ## Cron registration
  *
@@ -296,7 +309,33 @@ class Scheduler
             'site_url'     => (string) get_site_url(),
             'is_multisite' => function_exists('is_multisite') && is_multisite(),
             'plugins'      => $this->inventory->collect(),
+            'fatal_log'    => $this->collectFatalLog(),
         ];
+    }
+
+    /**
+     * Pull the fatal handler's rolling log for inclusion in the
+     * heartbeat. Slice 4 of KILLER #1 stores entries in the
+     * `deckwp_fatal_log` site option (capped 50 by the drop-in).
+     *
+     * The dashboard de-duplicates entries by their `ts` field
+     * against its `last_fatal_seen_ts` column, so it's safe for us
+     * to ship the entire log on every heartbeat. We deliberately
+     * do NOT clear the log on the connector side after sending —
+     * the dashboard's watermark IS the dedupe; clearing locally
+     * would lose entries on transport failures.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function collectFatalLog(): array
+    {
+        // get_site_option falls back to get_option on single-site,
+        // matching what the drop-in writes via update_site_option.
+        $log = get_site_option('deckwp_fatal_log', []);
+        if (! is_array($log)) {
+            return [];
+        }
+        return array_values($log);
     }
 
     private function isHeartbeatEnabled(): bool

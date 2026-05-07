@@ -367,6 +367,22 @@ that subsystem — outside the scope of this connector release.
   call `Installer::install([])` → confirm constant defined → re-apply
   filter → `formidable` now passes through.
 
+- `Heartbeat\Scheduler::buildPayload()` — heartbeat now ships the
+  drop-in's `deckwp_fatal_log` site option as a `fatal_log` array
+  in the payload. The dashboard's `HeartbeatProcessor` de-duplicates
+  entries by `ts` against its `sites.last_fatal_seen_ts` watermark
+  and dispatches `FatalHandlerTrippedNotification` for new ones.
+
+  We deliberately do NOT clear the log on the connector side after
+  sending: the dashboard's watermark IS the dedupe; clearing locally
+  would lose entries on transport failures. The drop-in's 50-entry
+  cap is the size guard.
+
+  Wire shape extension is additive — old dashboards that don't read
+  the `fatal_log` key just ignore it. New dashboards that haven't
+  received any fatal events yet see an empty array. No connector
+  version bump required for the receiver side.
+
 ### Compatibility
 
 - WordPress 5.2+ (when WP introduced `wp_register_fatal_error_handler`).
