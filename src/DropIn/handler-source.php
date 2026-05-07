@@ -23,18 +23,21 @@
  *
  *   ✅ Slice 1: install plumbing — DropIn\Installer + this file's
  *      skeleton, idempotent install on plugins_loaded, foreign-skip
- *      protection. handle() delegated to parent.
+ *      protection.
  *
- *   ✅ Slice 2 (this slice): single-site detection + auto-deactivate.
- *      Looks at $error['file'] from detect_error(), longest-prefix
- *      matches against get_option('active_plugins'), removes the
- *      culprit from the option, and appends an entry to the
- *      'deckwp_fatal_log' option (capped at 50). is_multisite() is
- *      explicitly skipped — that's Slice 3's job.
+ *   ✅ Slice 2: single-site detection + auto-deactivate via
+ *      longest-prefix-match against active_plugins, log to
+ *      deckwp_fatal_log (capped 50).
  *
- *   🚧 Slice 3: multisite — switch_to_blog loop across the network
- *      to identify which blog tripped the fatal, plus
- *      active_sitewide_plugins handling.
+ *   ✅ Slice 3 (this slice): multisite — three-tier search across
+ *      active_sitewide_plugins → current blog → switch_to_blog loop.
+ *      Log storage moved to get_site_option/update_site_option so a
+ *      single network-wide log feeds the dashboard regardless of
+ *      which blog tripped the fatal. Log entry now carries `scope`
+ *      ('single'|'network'|'blog'|'multisite' for the no-match case)
+ *      and `blog_id` (for scope=blog). Closes the Manage-GPL gap on
+ *      the comparison table ("Multisite fatal handler · ✓ full"
+ *      vs Manage GPL "× skipped").
  *
  *   🚧 Slice 4: memory-exhaustion branch + branded 503 splash to
  *      replace WP's generic "experiencing technical difficulties".
@@ -53,7 +56,7 @@ if (! defined('DECKWP_DROPIN_VERSION')) {
     // detects "ours but stale" and rewrites the file with the new
     // source. Slice-suffix is informational; the byte diff is what
     // actually triggers the upgrade.
-    define('DECKWP_DROPIN_VERSION', '0.12.0-slice2');
+    define('DECKWP_DROPIN_VERSION', '0.12.0-slice3');
 }
 
 if (! class_exists('WP_Fatal_Error_Handler')) {
@@ -65,16 +68,19 @@ if (! class_exists('WP_Fatal_Error_Handler')) {
 }
 
 /**
- * Single-site fatal handler with longest-prefix culprit detection
- * and auto-deactivate (Slice 2).
+ * Multisite-aware fatal handler with longest-prefix culprit detection
+ * and auto-deactivate.
  *
- * Multisite networks fall through to parent::handle() — Slice 3 adds
- * the switch_to_blog loop. Memory exhaustion is treated identically
- * to other E_ERRORs for now; Slice 4 adds the dedicated branch.
+ * Single-site (Slice 2) remains the fast path — one option read, one
+ * option write. Multisite (Slice 3) walks active_sitewide_plugins
+ * first (network-active is the most common multisite shape), then
+ * the current blog, then every other blog via switch_to_blog. Memory
+ * exhaustion is treated identically to other E_ERRORs for now;
+ * Slice 4 adds the dedicated branch + branded 503.
  */
 class DeckWP_Fatal_Error_Handler extends WP_Fatal_Error_Handler
 {
-    /** Hard cap on the deckwp_fatal_log option. Older entries roll off. */
+    /** Hard cap on the deckwp_fatal_log entries. Older entries roll off. */
     const FATAL_LOG_CAP = 50;
 
     /** Option key for the rolling log. Read by the dashboard via REST. */
@@ -92,15 +98,16 @@ class DeckWP_Fatal_Error_Handler extends WP_Fatal_Error_Handler
     public function handle()
     {
         try {
-            if (! is_multisite()) {
-                $error = $this->detect_error();
-                if (is_array($error) && ! empty($error['file'])) {
-                    $this->deckwpRecordAndDeactivate($error);
+            $error = $this->detect_error();
+            if (is_array($error) && ! empty($error['file'])) {
+                if (is_multisite()) {
+                    $this->deckwpHandleMultisite($error);
+                } else {
+                    $this->deckwpHandleSingleSite($error);
                 }
             }
-            // Slice 3 hook: multisite identification will branch here.
             // Slice 4 hook: memory-exhaustion detection + branded splash
-            // will branch here as well, before parent::handle().
+            // will branch ahead of parent::handle() once landed.
         } catch (\Throwable $e) {
             // Last-ditch: log to error_log and continue. Never let our
             // bookkeeping crash the recovery page.
@@ -111,81 +118,150 @@ class DeckWP_Fatal_Error_Handler extends WP_Fatal_Error_Handler
     }
 
     /**
-     * Try to attribute the fatal to an active plugin. If a culprit is
-     * found, deactivate it and append a structured entry to the log.
-     * No-op (just logs without `plugin_path`) when the error file
-     * lives outside any active plugin's directory.
+     * Single-site path: search active_plugins, deactivate, log.
      *
      * @param array $error Shape from WP_Fatal_Error_Handler::detect_error().
      */
-    protected function deckwpRecordAndDeactivate(array $error)
+    protected function deckwpHandleSingleSite(array $error)
     {
-        $culprit     = $this->deckwpFindCulprit((string) $error['file']);
+        $relative    = $this->deckwpRelativePluginPath((string) $error['file']);
+        $culprit     = null;
         $deactivated = false;
 
-        if ($culprit !== null) {
-            $deactivated = $this->deckwpDeactivatePlugin($culprit);
+        if ($relative !== null) {
+            $active  = (array) get_option('active_plugins', []);
+            $culprit = $this->deckwpLongestPrefixMatch($relative, $active);
+            if ($culprit !== null) {
+                $deactivated = $this->deckwpDeactivatePlugin($culprit);
+            }
         }
 
-        $message = isset($error['message']) ? (string) $error['message'] : '';
-        if (strlen($message) > self::MESSAGE_TRUNCATE) {
-            $message = substr($message, 0, self::MESSAGE_TRUNCATE) . '…';
-        }
-
-        $this->deckwpAppendLog([
-            'ts'          => time(),
-            'type'        => isset($error['type']) ? (int) $error['type'] : 0,
-            'file'        => (string) $error['file'],
-            'line'        => isset($error['line']) ? (int) $error['line'] : 0,
-            'message'     => $message,
-            'plugin_path' => $culprit,
-            'deactivated' => $deactivated,
-        ]);
+        $this->deckwpAppendLog(
+            $this->deckwpBuildLogEntry($error, $culprit, $deactivated, 'single')
+        );
     }
 
     /**
-     * Longest-prefix match: given an absolute path that triggered the
-     * fatal, find the active plugin whose directory contains it.
+     * Multisite path. Three-tier search:
      *
-     * Two cases for an entry in active_plugins:
-     *   - 'slug/main.php' (standard) — match on the 'slug/' prefix
-     *   - 'standalone.php' (Hello-Dolly pattern) — exact filename match
+     *   1. Network-active plugins (active_sitewide_plugins) — single
+     *      registry shared by every blog, most common multisite shape.
+     *   2. Current blog (cheap: no switch needed).
+     *   3. Every other blog via switch_to_blog loop.
      *
-     * Returns the matching active_plugins entry verbatim, or null if
-     * the error file lives outside WP_PLUGIN_DIR or in an inactive
-     * plugin's tree.
+     * First match wins. If nothing matches, log without plugin_path.
+     *
+     * @param array $error Shape from WP_Fatal_Error_Handler::detect_error().
+     */
+    protected function deckwpHandleMultisite(array $error)
+    {
+        $relative = $this->deckwpRelativePluginPath((string) $error['file']);
+
+        if ($relative === null) {
+            // Error file is outside WP_PLUGIN_DIR — log and bail.
+            $this->deckwpAppendLog(
+                $this->deckwpBuildLogEntry($error, null, false, 'multisite')
+            );
+            return;
+        }
+
+        // 1. Network-active plugins.
+        $sitewide       = (array) get_site_option('active_sitewide_plugins', []);
+        $networkCulprit = $this->deckwpLongestPrefixMatch($relative, array_keys($sitewide));
+        if ($networkCulprit !== null) {
+            $deactivated = $this->deckwpDeactivateNetworkPlugin($networkCulprit);
+            $this->deckwpAppendLog(
+                $this->deckwpBuildLogEntry($error, $networkCulprit, $deactivated, 'network')
+            );
+            return;
+        }
+
+        // 2. Current blog (most likely culprit when network-active didn't match).
+        $currentBlogId = function_exists('get_current_blog_id') ? (int) get_current_blog_id() : 0;
+        $culprit       = $this->deckwpFindCulpritOnBlog($relative, $currentBlogId);
+        if ($culprit !== null) {
+            $deactivated = $this->deckwpDeactivatePluginOnBlog($culprit, $currentBlogId);
+            $this->deckwpAppendLog(
+                $this->deckwpBuildLogEntry($error, $culprit, $deactivated, 'blog', $currentBlogId)
+            );
+            return;
+        }
+
+        // 3. switch_to_blog loop across every other blog.
+        if (function_exists('get_sites')) {
+            $blogIds = get_sites([
+                'fields' => 'ids',
+                'number' => 0, // all sites; do NOT cap
+            ]);
+            foreach ($blogIds as $blogId) {
+                $blogId = (int) $blogId;
+                if ($blogId === $currentBlogId) {
+                    continue;
+                }
+                $culprit = $this->deckwpFindCulpritOnBlog($relative, $blogId);
+                if ($culprit !== null) {
+                    $deactivated = $this->deckwpDeactivatePluginOnBlog($culprit, $blogId);
+                    $this->deckwpAppendLog(
+                        $this->deckwpBuildLogEntry($error, $culprit, $deactivated, 'blog', $blogId)
+                    );
+                    return;
+                }
+            }
+        }
+
+        // 4. No match anywhere — log with plugin_path null. Operator
+        // (or future Slice 4 logic) decides what to do.
+        $this->deckwpAppendLog(
+            $this->deckwpBuildLogEntry($error, null, false, 'multisite')
+        );
+    }
+
+    /**
+     * Path of the error file relative to WP_PLUGIN_DIR, or null when
+     * the file lives outside the plugins tree (theme code, mu-plugins,
+     * core). Used by both single-site and multisite paths.
+     *
+     * Path normalization: error files on Windows arrive with backslashes,
+     * active_plugins entries are always forward-slash. wp_normalize_path()
+     * bridges them; we manually fall back when WP isn't loaded enough to
+     * provide it (extreme-early-failure mode).
      *
      * @return string|null
      */
-    protected function deckwpFindCulprit($errorFile)
+    protected function deckwpRelativePluginPath($errorFile)
     {
         if (! defined('WP_PLUGIN_DIR') || ! is_string($errorFile) || $errorFile === '') {
             return null;
         }
 
-        // wp_normalize_path may not be available in extreme-early
-        // failure modes; fall back to a manual normalize.
-        $normalize = function ($path) {
-            return function_exists('wp_normalize_path')
-                ? wp_normalize_path($path)
-                : str_replace('\\', '/', $path);
-        };
-
-        $pluginDir = rtrim($normalize(WP_PLUGIN_DIR), '/');
-        $errorFile = $normalize($errorFile);
+        $pluginDir = rtrim($this->deckwpNormalizePath(WP_PLUGIN_DIR), '/');
+        $errorFile = $this->deckwpNormalizePath($errorFile);
 
         if (strpos($errorFile, $pluginDir . '/') !== 0) {
             return null;
         }
 
-        $relative = substr($errorFile, strlen($pluginDir) + 1);
-        // $relative shape: 'slug/sub/file.php' OR 'single.php'
+        return substr($errorFile, strlen($pluginDir) + 1);
+        // Shape: 'slug/sub/file.php' OR 'single.php'
+    }
 
-        $active    = (array) get_option('active_plugins', []);
+    /**
+     * Longest-prefix match against a list of active_plugins-shaped
+     * entries. Standalone single-file plugins (no slash in path) match
+     * exactly; folder plugins ('slug/main.php') match on the 'slug/'
+     * prefix and the longest hit wins.
+     *
+     * @param string   $relative   File path under WP_PLUGIN_DIR.
+     * @param string[] $candidates active_plugins-shaped entries (or
+     *                             array_keys(active_sitewide_plugins)).
+     * @return string|null
+     */
+    protected function deckwpLongestPrefixMatch($relative, array $candidates)
+    {
         $bestMatch = null;
         $bestLen   = 0;
 
-        foreach ($active as $pluginPath) {
+        foreach ($candidates as $pluginPath) {
             if (! is_string($pluginPath) || $pluginPath === '') {
                 continue;
             }
@@ -210,9 +286,25 @@ class DeckWP_Fatal_Error_Handler extends WP_Fatal_Error_Handler
     }
 
     /**
-     * Remove a plugin from the active_plugins option. Returns true
-     * when the option was actually modified, false if the plugin was
-     * already inactive or update_option refused.
+     * Look for the culprit in a specific blog's active_plugins.
+     * Pure read — no mutation.
+     *
+     * @return string|null
+     */
+    protected function deckwpFindCulpritOnBlog($relative, $blogId)
+    {
+        if (! function_exists('switch_to_blog') || $blogId <= 0) {
+            return null;
+        }
+        switch_to_blog($blogId);
+        $active = (array) get_option('active_plugins', []);
+        restore_current_blog();
+        return $this->deckwpLongestPrefixMatch($relative, $active);
+    }
+
+    /**
+     * Remove a plugin from the current site's active_plugins option.
+     * Returns true when the option was actually modified.
      *
      * @return bool
      */
@@ -229,22 +321,95 @@ class DeckWP_Fatal_Error_Handler extends WP_Fatal_Error_Handler
     }
 
     /**
-     * Append an entry to deckwp_fatal_log, trimmed to the cap. The
-     * option is stored with autoload=false because the dashboard
-     * pulls it on demand and we don't want it loaded on every request.
+     * Remove a plugin from a specific blog's active_plugins option.
+     * Wraps deckwpDeactivatePlugin in a switch_to_blog/restore pair.
      *
-     * @param array $entry Already shaped by the caller.
+     * @return bool
+     */
+    protected function deckwpDeactivatePluginOnBlog($pluginPath, $blogId)
+    {
+        if (! function_exists('switch_to_blog') || $blogId <= 0) {
+            return false;
+        }
+        switch_to_blog($blogId);
+        $result = $this->deckwpDeactivatePlugin($pluginPath);
+        restore_current_blog();
+        return $result;
+    }
+
+    /**
+     * Remove a plugin from the network's active_sitewide_plugins.
+     *
+     * @return bool
+     */
+    protected function deckwpDeactivateNetworkPlugin($pluginPath)
+    {
+        $sitewide = (array) get_site_option('active_sitewide_plugins', []);
+        if (! isset($sitewide[$pluginPath])) {
+            return false;
+        }
+        unset($sitewide[$pluginPath]);
+        return (bool) update_site_option('active_sitewide_plugins', $sitewide);
+    }
+
+    /**
+     * Build the structured log entry. Caller passes `scope` so single,
+     * network, and per-blog matches can be told apart in the dashboard.
+     * `blog_id` only present when scope === 'blog'.
+     *
+     * @return array
+     */
+    protected function deckwpBuildLogEntry(array $error, $pluginPath, $deactivated, $scope, $blogId = null)
+    {
+        $message = isset($error['message']) ? (string) $error['message'] : '';
+        if (strlen($message) > self::MESSAGE_TRUNCATE) {
+            $message = substr($message, 0, self::MESSAGE_TRUNCATE) . '…';
+        }
+
+        $entry = [
+            'ts'          => time(),
+            'type'        => isset($error['type']) ? (int) $error['type'] : 0,
+            'file'        => isset($error['file']) ? (string) $error['file'] : '',
+            'line'        => isset($error['line']) ? (int) $error['line'] : 0,
+            'message'     => $message,
+            'plugin_path' => $pluginPath,
+            'deactivated' => $deactivated,
+            'scope'       => $scope,
+        ];
+        if ($blogId !== null) {
+            $entry['blog_id'] = (int) $blogId;
+        }
+        return $entry;
+    }
+
+    /**
+     * Append an entry to the network-wide deckwp_fatal_log, trimmed
+     * to the cap. update_site_option falls back to update_option on
+     * single-site automatically, so this works in both topologies
+     * with no extra branching.
      */
     protected function deckwpAppendLog(array $entry)
     {
-        $log   = (array) get_option(self::FATAL_LOG_OPTION, []);
+        $log   = (array) get_site_option(self::FATAL_LOG_OPTION, []);
         $log[] = $entry;
 
         if (count($log) > self::FATAL_LOG_CAP) {
             $log = array_slice($log, -self::FATAL_LOG_CAP);
         }
 
-        update_option(self::FATAL_LOG_OPTION, $log, false);
+        update_site_option(self::FATAL_LOG_OPTION, $log);
+    }
+
+    /**
+     * Cross-platform path normalization. wp_normalize_path() may not
+     * be available in extreme-early-failure modes; fall back to a
+     * minimal manual normalize so the handler can still run.
+     */
+    protected function deckwpNormalizePath($path)
+    {
+        return function_exists('wp_normalize_path')
+            ? wp_normalize_path($path)
+            : str_replace('\\', '/', $path);
     }
 }
 

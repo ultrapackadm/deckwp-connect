@@ -75,6 +75,43 @@ versioning follows [SemVer](https://semver.org/).
   in place — operators don't need to reinstall the plugin to pick
   up the new handler.
 
+- **Multisite fatal detection** — Slice 3 of the rollout. Closes the
+  Manage GPL gap on the comparison table ("Multisite fatal handler ·
+  ✓ full" vs Manage GPL "× skipped"). `handle()` now branches on
+  `is_multisite()`; the multisite path runs a three-tier search:
+
+  1. **Network-active plugins** (`active_sitewide_plugins`) — the
+     most common multisite shape, single registry shared by every
+     blog. Match here deactivates network-wide via `update_site_option`.
+  2. **Current blog** — `get_current_blog_id()` is the most likely
+     culprit when the network registry didn't match.
+  3. **switch_to_blog loop** across every other blog (`get_sites
+     (['fields' => 'ids', 'number' => 0])`). First match wins.
+
+  First match on any tier deactivates and logs the entry with
+  `scope` set to `network` / `blog` (with `blog_id`) so the dashboard
+  can render "deactivated *fee-flux* on blog #7" rather than just
+  "deactivated *fee-flux*".
+
+  Single-site path is unchanged in behavior; the scope field reads
+  `single`, no `blog_id`. Refactored single-site to share helpers
+  (`deckwpRelativePluginPath`, `deckwpLongestPrefixMatch`,
+  `deckwpNormalizePath`) with the multisite path so the prefix-match
+  algorithm only lives in one place.
+
+  **Log storage moved to `get_site_option` / `update_site_option`.**
+  In multisite, this stores the log in `wp_sitemeta` (network-wide)
+  so the dashboard pulls a single source of truth regardless of
+  which blog tripped the fatal. On single-site, `update_site_option`
+  is equivalent to `update_option` — no behavior change for non-MU
+  operators, no migration needed for the Slice 2 data shape (the
+  new `scope` field is additive; old entries without it default to
+  `single` semantically).
+
+  Drop-in version bumped to `0.12.0-slice3`. Same auto-rewrite
+  mechanism as Slice 2 — `plugins_loaded` runs the Installer, byte
+  diff triggers the upgrade.
+
 ### Compatibility
 
 - WordPress 5.2+ (when WP introduced `wp_register_fatal_error_handler`).
