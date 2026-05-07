@@ -10,6 +10,7 @@ use DeckWP\Connect\Maintenance\MaintenanceGuard;
 use DeckWP\Connect\REST\Server as RestServer;
 use DeckWP\Connect\Scan\Scheduler as ScanScheduler;
 use DeckWP\Connect\Settings\Page as SettingsPage;
+use DeckWP\Connect\Updater\SelfUpdater;
 use DeckWP\Connect\Updater\UpdateSuppressor;
 use DeckWP\Connect\Whitelabel\Branding as WhitelabelBranding;
 
@@ -62,11 +63,18 @@ use DeckWP\Connect\Whitelabel\Branding as WhitelabelBranding;
  *                                  deckwp_whitelabel_config site option
  *                                  pushed by the dashboard via
  *                                  /wp-json/deckwp/v1/whitelabel.
+ *   - Updater\SelfUpdater        — polls the dashboard's
+ *                                  `GET /api/v1/sites/{site}/connector/latest`
+ *                                  on the WP update_plugins transient
+ *                                  refresh and offers the connector's
+ *                                  own update through WP's built-in
+ *                                  upgrade flow. Operator clicks Update
+ *                                  on the WP Plugins page; no manual
+ *                                  redeploy.
  *
  * ## Subsystems planned (per CLAUDE.md, will be wired in upcoming sprints)
  *
  *   - Transport\InitHookFallback — bypass when /wp-json is blocked by host
- *   - Updater\SelfUpdater        — pulls connector self-updates
  *
  * ## Singleton
  *
@@ -113,6 +121,7 @@ class Bootstrap
         (new RestServer())->register();
         (new UpdateSuppressor())->register();
         (new WhitelabelBranding())->register();
+        (new SelfUpdater())->register();
 
         // Maintenance mode guard — runs at `init` priority 1 so we
         // short-circuit the request before themes/plugins start their

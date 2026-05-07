@@ -367,6 +367,43 @@ that subsystem — outside the scope of this connector release.
   call `Installer::install([])` → confirm constant defined → re-apply
   filter → `formidable` now passes through.
 
+- `Updater\SelfUpdater` — connector self-update via WordPress'
+  built-in upgrade flow. Closes Next #5 of the ROADMAP.
+
+  Without this, shipping v0.13.0 means every operator manually
+  downloads the zip and re-installs on every site. With this, the
+  connector polls the dashboard's
+  `GET /api/v1/sites/{site}/connector/latest` (HMAC-signed) on
+  each `update_plugins` transient refresh; if the dashboard
+  reports a newer version, our filter injects the offer into the
+  transient and the operator clicks Update on the WP admin
+  Plugins page like any other plugin.
+
+  Cache: 1h positive (transient `deckwp_connect_self_update_check`),
+  5min negative (transient `deckwp_connect_self_update_failed`).
+  Even hundreds of sites poll-storming at once won't multiply the
+  GitHub rate limit pressure on the dashboard side — the dashboard's
+  ConnectorReleaseFetcher caches its GitHub poll for 1h too.
+
+  Wire shape (response body the dashboard sends):
+
+  ```jsonc
+  { "version":      "0.13.0",
+    "download_url": "https://github.com/.../deckwp-connect.zip",
+    "tested_wp":    "6.6",
+    "requires_php": "7.4",
+    "changelog_url":"https://github.com/.../releases/tag/v0.13.0",
+    "published_at": "2026-05-08T10:00:00Z" }
+  ```
+
+  When `download_url` is empty (release with no zip asset), or the
+  dashboard returns 503, the filter passes through unchanged —
+  better silent no-op than a broken upgrade attempt.
+
+  Wired in Bootstrap. No connector-side smoke yet (would require
+  cutting v0.13.0 release on the public repo; vai como part of
+  the actual release ritual).
+
 - `Heartbeat\Scheduler::buildPayload()` — heartbeat now ships the
   drop-in's `deckwp_fatal_log` site option as a `fatal_log` array
   in the payload. The dashboard's `HeartbeatProcessor` de-duplicates
