@@ -110,6 +110,20 @@ class Installer
     {
         $this->loadCoreUpgraderClasses();
 
+        // Bypass Updater\UpdateSuppressor for the lifetime of this
+        // request. The suppressor strips managed entries from the
+        // site_transient_update_plugins / _themes transients so an
+        // operator clicking Update on the WP admin can't bypass our
+        // backup + smoke + auto-rollback flow. But this code path
+        // IS our own update flow — we need those entries present for
+        // wp_update_plugins() and Plugin_Upgrader::upgrade() below to
+        // see something to act on. Constants are request-scoped, and
+        // the /install-batch HTTP request is never an admin browse,
+        // so the side-effect is contained.
+        if (! defined('DECKWP_CONNECT_ALLOW_MANAGED_UPDATES')) {
+            define('DECKWP_CONNECT_ALLOW_MANAGED_UPDATES', true);
+        }
+
         // Refresh the update_plugins transient so Plugin_Upgrader::upgrade()
         // has fresh download URLs + versions to work with. Without this it
         // would either no-op (transient stale, says nothing to update) or

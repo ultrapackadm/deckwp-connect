@@ -280,6 +280,21 @@ that subsystem — outside the scope of this connector release.
   - `no_update` left untouched after plugin filter ran.
   - Bypass constant keeps everything in the response.
 
+- `Install\Installer::install()` — defines
+  `DECKWP_CONNECT_ALLOW_MANAGED_UPDATES = true` before refreshing the
+  `update_plugins` transient and calling `Plugin_Upgrader::upgrade`.
+  Closes the loop on the UpdateSuppressor: without this bypass, the
+  `wp_update_plugins()` refresh inside `install()` would fire the
+  suppressor's filter, strip the very entries we're about to upgrade,
+  and the upgrader would no-op ("nothing to update"). The constant
+  is request-scoped; the `/install-batch` HTTP request is one of
+  ours (never an admin browse), so the side-effect is contained.
+
+  Smoke (3/3 pass): set `formidable` as managed → confirm
+  `apply_filters('site_transient_update_plugins', ...)` strips it →
+  call `Installer::install([])` → confirm constant defined → re-apply
+  filter → `formidable` now passes through.
+
 ### Compatibility
 
 - WordPress 5.2+ (when WP introduced `wp_register_fatal_error_handler`).
