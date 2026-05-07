@@ -10,6 +10,7 @@ use DeckWP\Connect\Maintenance\MaintenanceGuard;
 use DeckWP\Connect\REST\Server as RestServer;
 use DeckWP\Connect\Scan\Scheduler as ScanScheduler;
 use DeckWP\Connect\Settings\Page as SettingsPage;
+use DeckWP\Connect\Updater\UpdateSuppressor;
 
 /**
  * Boots and registers every connector subsystem on `plugins_loaded`.
@@ -31,7 +32,8 @@ use DeckWP\Connect\Settings\Page as SettingsPage;
  *                                  dashboard. Currently: scan,
  *                                  install-batch, restore-backup,
  *                                  delete-backup, inventory, sso-login,
- *                                  maintenance, backup-create.
+ *                                  maintenance, backup-create,
+ *                                  set-managed-slugs.
  *                                  HMAC-protected (except sso-login,
  *                                  which uses a self-signed query token).
  *   - Maintenance\MaintenanceGuard — `init` hook that intercepts
@@ -45,13 +47,19 @@ use DeckWP\Connect\Settings\Page as SettingsPage;
  *                                  drop-ins are detected and skipped.
  *                                  Slice 1 of the multisite-aware
  *                                  fatal-handling rollout.
+ *   - Updater\UpdateSuppressor   — hides "Update available" for plugins
+ *                                  / themes the dashboard has flagged
+ *                                  as managed (deckwp_managed_slugs
+ *                                  site option). Closes the flank where
+ *                                  an operator clicking Update on the
+ *                                  WP admin would bypass the connector's
+ *                                  pre-update backup + smoke flow.
  *
  * ## Subsystems planned (per CLAUDE.md, will be wired in upcoming sprints)
  *
  *   - Transport\InitHookFallback — bypass when /wp-json is blocked by host
  *   - Whitelabel\Branding        — rewrites plugin row metadata
  *   - Updater\SelfUpdater        — pulls connector self-updates
- *   - Updater\UpdateSuppressor   — hides "update available" for managed slugs
  *
  * ## Singleton
  *
@@ -96,6 +104,7 @@ class Bootstrap
         (new HeartbeatScheduler())->register();
         (new ScanScheduler())->register();
         (new RestServer())->register();
+        (new UpdateSuppressor())->register();
 
         // Maintenance mode guard — runs at `init` priority 1 so we
         // short-circuit the request before themes/plugins start their

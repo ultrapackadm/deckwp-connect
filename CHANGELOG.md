@@ -207,6 +207,79 @@ and push the zip to remote object storage. Wire-protocol contract,
 auth scheme, and idempotency strategy will be defined alongside
 that subsystem — outside the scope of this connector release.
 
+- `Updater\UpdateSuppressor` + `REST\Routes\SetManagedSlugsRoute` —
+  closes the flank where an operator clicking Update on the WP admin
+  plugins screen would bypass DeckWP's pre-update backup + smoke +
+  auto-rollback flow (`install-batch` route + Sprint 4 wiring).
+  Without this, the dashboard's careful orchestration is one click
+  away from being defeated; with it, the "Update available" notice
+  simply doesn't appear for plugins / themes the dashboard owns.
+
+  ### Wire shape
+
+  `POST /wp-json/deckwp/v1/set-managed-slugs` (HMAC-protected):
+
+  ```jsonc
+  { "plugins": ["formidable-pro/formidable-pro.php", "wp-rocket"],
+    "themes":  ["avada"] }
+  ```
+
+  Response 200: `{ "ok": true, "stored": { "plugins": 2, "themes": 1 } }`.
+
+  Plugin entries can be the WP plugin_path (`slug/main.php`) OR
+  just the folder slug (`slug`) — the suppressor matches both
+  shapes so the dashboard isn't forced to learn the main file
+  name. Theme entries are folder slugs only.
+
+  Empty arrays clear the list (`{"plugins":[],"themes":[]}`).
+  Empty *body* (no keys at all) returns 422 `invalid_input` —
+  sending nothing is suspicious (typo / wrong route) rather than
+  intent to clear.
+
+  ### Suppression mechanics
+
+  Filters `site_transient_update_plugins` / `site_transient_update_themes`
+  at priority 9999 (after most third-party filters). Removes managed
+  entries from `response` so:
+
+  - The "Update available" pill in the plugins list disappears.
+  - The row-actions Update link disappears.
+  - Bulk-action checkboxes for those rows can't trigger an update.
+  - Auto-update toggles disappear.
+
+  `no_update` and `checked` are deliberately left alone — they're
+  read by other update flows (heartbeat, scheduling) and stripping
+  them would have surprising knock-ons.
+
+  ### Bypass for the dashboard's own update flow
+
+  `Install\Installer` calls `wp_update_plugins()` to refresh the
+  transient before running `Plugin_Upgrader::upgrade`. That refresh
+  fires this filter — and would strip the very entry we're about to
+  upgrade. Define `DECKWP_CONNECT_ALLOW_MANAGED_UPDATES = true`
+  before the upgrader runs and the filter returns the transient
+  untouched. (Wiring in `Install\Installer` lands alongside the
+  next install-batch hardening pass.)
+
+  ### Storage
+
+  `deckwp_managed_slugs` site option (`update_site_option`).
+  Network-wide on multisite, equivalent to wp_options on single-site.
+  No per-blog list — the dashboard sends one canonical state per
+  site / network on every call.
+
+  ### Smoke test
+
+  Internal-dispatch coverage of 8 cases — all pass:
+  - `/set-managed-slugs` happy path (plugins + themes round-trip).
+  - Empty body → 422 `invalid_input`.
+  - Both keys empty → 200 (clear-all intent).
+  - Plugin filter matches plugin_path entries (formidable-pro/...).
+  - Plugin filter matches folder-slug entries (wp-rocket).
+  - Theme filter matches folder slug (avada).
+  - `no_update` left untouched after plugin filter ran.
+  - Bypass constant keeps everything in the response.
+
 ### Compatibility
 
 - WordPress 5.2+ (when WP introduced `wp_register_fatal_error_handler`).

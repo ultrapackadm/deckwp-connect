@@ -12,6 +12,7 @@ use DeckWP\Connect\REST\Routes\InventoryRoute;
 use DeckWP\Connect\REST\Routes\MaintenanceRoute;
 use DeckWP\Connect\REST\Routes\RestoreBackupRoute;
 use DeckWP\Connect\REST\Routes\ScanRoute;
+use DeckWP\Connect\REST\Routes\SetManagedSlugsRoute;
 use DeckWP\Connect\REST\Routes\SsoLoginRoute;
 
 /**
@@ -58,6 +59,11 @@ use DeckWP\Connect\REST\Routes\SsoLoginRoute;
  *     `deckwp_connect_backup_created` action hook on success — reserved
  *     for the planned UltraHub off-site upload integration.
  *     {@see BackupCreateRoute}.
+ *   - POST /wp-json/deckwp/v1/set-managed-slugs — set the list of
+ *     plugins / themes the dashboard is managing. Drives the
+ *     UpdateSuppressor's filtering of "Update available" notices in
+ *     the WP admin so an operator can't bypass the dashboard's
+ *     pre-update backup + smoke flow. {@see SetManagedSlugsRoute}.
  *
  * ## Planned
  *
@@ -101,6 +107,9 @@ class Server
     /** @var BackupCreateRoute */
     private $backupCreateRoute;
 
+    /** @var SetManagedSlugsRoute */
+    private $setManagedSlugsRoute;
+
     public function __construct(
         HmacVerifier $verifier = null,
         ScanRoute $scanRoute = null,
@@ -110,17 +119,19 @@ class Server
         InventoryRoute $inventoryRoute = null,
         SsoLoginRoute $ssoLoginRoute = null,
         MaintenanceRoute $maintenanceRoute = null,
-        BackupCreateRoute $backupCreateRoute = null
+        BackupCreateRoute $backupCreateRoute = null,
+        SetManagedSlugsRoute $setManagedSlugsRoute = null
     ) {
-        $this->verifier           = $verifier ?? new HmacVerifier();
-        $this->scanRoute          = $scanRoute ?? new ScanRoute();
-        $this->installBatchRoute  = $installBatchRoute ?? new InstallBatchRoute();
-        $this->restoreBackupRoute = $restoreBackupRoute ?? new RestoreBackupRoute();
-        $this->deleteBackupRoute  = $deleteBackupRoute ?? new DeleteBackupRoute();
-        $this->inventoryRoute     = $inventoryRoute ?? new InventoryRoute();
-        $this->ssoLoginRoute      = $ssoLoginRoute ?? new SsoLoginRoute();
-        $this->maintenanceRoute   = $maintenanceRoute ?? new MaintenanceRoute();
-        $this->backupCreateRoute  = $backupCreateRoute ?? new BackupCreateRoute();
+        $this->verifier             = $verifier ?? new HmacVerifier();
+        $this->scanRoute            = $scanRoute ?? new ScanRoute();
+        $this->installBatchRoute    = $installBatchRoute ?? new InstallBatchRoute();
+        $this->restoreBackupRoute   = $restoreBackupRoute ?? new RestoreBackupRoute();
+        $this->deleteBackupRoute    = $deleteBackupRoute ?? new DeleteBackupRoute();
+        $this->inventoryRoute       = $inventoryRoute ?? new InventoryRoute();
+        $this->ssoLoginRoute        = $ssoLoginRoute ?? new SsoLoginRoute();
+        $this->maintenanceRoute     = $maintenanceRoute ?? new MaintenanceRoute();
+        $this->backupCreateRoute    = $backupCreateRoute ?? new BackupCreateRoute();
+        $this->setManagedSlugsRoute = $setManagedSlugsRoute ?? new SetManagedSlugsRoute();
     }
 
     /**
@@ -190,6 +201,12 @@ class Server
             'deckwp/v1',
             '/backup-create',
             $this->backupCreateRoute->args($permissionCallback)
+        );
+
+        register_rest_route(
+            'deckwp/v1',
+            '/set-managed-slugs',
+            $this->setManagedSlugsRoute->args($permissionCallback)
         );
     }
 }
