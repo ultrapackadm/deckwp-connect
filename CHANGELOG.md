@@ -21,24 +21,59 @@ versioning follows [SemVer](https://semver.org/).
   connector during boot, which is the exact failure mode this feature
   exists to fix.
 
-  This slice is install plumbing only. The drop-in's `handle()` method
-  currently delegates to WP's default (`parent::handle()`); subsequent
-  slices add:
-
-  1. Single-site detection — longest-prefix-match on the error trace
-     against `active_plugins`, log to `deckwp_fatal_log` option (cap 50),
-     auto-deactivate offending plugin.
-  2. Multisite — `switch_to_blog` loop across the network to find which
-     site has the bad plugin. **This is the Manage GPL gap** that
-     becomes our differentiator on the comparison table.
-  3. Memory-exhaustion branch + branded 503 splash (mirrors the
-     MaintenanceGuard's inline-CSS pattern, no theme dependency).
-
   Wired into `Bootstrap::run()` after the existing subsystems.
   Install failures are logged to `error_log()` only — the connector
   keeps booting normally so the rest of the plugin still functions
   on hosts where wp-content/ is unwritable (rare, but possible on
   some shared hosts with chrooted FS).
+
+  Slice 1 was install plumbing only — `handle()` delegated to
+  `parent::handle()`. Slice 2 (next bullet) brings the actual
+  single-site detection + auto-deactivate. Slices 3 (multisite,
+  the Manage GPL gap) and 4 (memory-exhaustion branch + branded
+  503 splash) still pending.
+
+- **Single-site fatal detection + auto-deactivate** — Slice 2 of the
+  rollout. `DeckWP_Fatal_Error_Handler::handle()` now identifies the
+  active plugin whose directory contains the fatal-trigger file
+  (longest-prefix match against `get_option('active_plugins')`),
+  removes it from the option (live deactivate), and appends a
+  structured entry to the `deckwp_fatal_log` option (capped at 50,
+  stored with `autoload=false`):
+
+  ```jsonc
+  {
+    "ts": 1717684800,
+    "type": 1,                                          // E_ERROR etc.
+    "file": "/var/www/.../wp-content/plugins/buggy/buggy.php",
+    "line": 42,
+    "message": "Call to undefined function ...",        // truncated at 1024 bytes
+    "plugin_path": "buggy/buggy.php",                   // null if outside any active plugin
+    "deactivated": true                                 // false if not in active_plugins or update_option refused
+  }
+  ```
+
+  Both standard `slug/main.php` and standalone single-file plugins
+  (Hello-Dolly pattern) are matched. Errors outside `WP_PLUGIN_DIR`
+  (theme code, mu-plugins, core) log without `plugin_path` so the
+  dashboard sees the trace but the drop-in doesn't auto-deactivate
+  something it can't attribute.
+
+  **Multisite networks fall through to `parent::handle()` unchanged**
+  — `is_multisite()` early-out. Slice 3 lands the `switch_to_blog`
+  loop. Memory exhaustion is currently treated as a regular E_ERROR;
+  Slice 4 splits it out with a dedicated branch + branded 503 splash.
+
+  Defense in depth: the entire detection block sits inside a
+  `try/catch (\Throwable)`. A bug in our bookkeeping must NEVER
+  prevent `parent::handle()` from rendering the user-facing recovery
+  page — failures degrade silently to `error_log()`.
+
+  Drop-in version bumped to `0.12.0-slice2`. The Installer's
+  byte-equal compare detects the changed source on the next
+  `plugins_loaded` and rewrites `wp-content/fatal-error-handler.php`
+  in place — operators don't need to reinstall the plugin to pick
+  up the new handler.
 
 ### Compatibility
 
