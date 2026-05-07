@@ -31,9 +31,9 @@ use DeckWP\Connect\Settings\Page as SettingsPage;
  *                                  dashboard. Currently: scan,
  *                                  install-batch, restore-backup,
  *                                  delete-backup, inventory, sso-login,
- *                                  maintenance. HMAC-protected (except
- *                                  sso-login, which uses a self-signed
- *                                  query token).
+ *                                  maintenance, backup-create.
+ *                                  HMAC-protected (except sso-login,
+ *                                  which uses a self-signed query token).
  *   - Maintenance\MaintenanceGuard — `init` hook that intercepts
  *                                    non-admin / non-REST requests
  *                                    with a 503 branded page when

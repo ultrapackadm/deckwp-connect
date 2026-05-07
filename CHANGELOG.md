@@ -157,6 +157,56 @@ versioning follows [SemVer](https://semver.org/).
   Drop-in version bumped to `0.12.0-slice4`. Auto-rewrite triggered
   on next `plugins_loaded` via byte-equal diff.
 
+- `REST\Routes\BackupCreateRoute` — `POST /wp-json/deckwp/v1/backup-create`.
+  HMAC-protected. Operator-initiated, off-cycle plugin folder snapshot
+  (vs. the install-batch path that snapshots only when `backup_required:
+  true` rides on an upgrade item). Body shape:
+
+  ```jsonc
+  { "slug": "formidable-pro" }
+  // optional: "type": "plugin" (default; reserved for future themes)
+  ```
+
+  Response 200:
+
+  ```jsonc
+  { "ok": true,
+    "backup": {
+      "local_path":    "deckwp-backups/formidable-pro-2026-05-07T13-50-00-Ax9dfe.zip",
+      "absolute_path": "/var/www/.../uploads/deckwp-backups/...zip",
+      "checksum":      "sha256-hex",
+      "size_bytes":    524288
+    }
+  }
+  ```
+
+  Validation-shaped failures map to 422 (`invalid_slug`,
+  `plugin_not_found`, `plugin_too_large`, `path_escape`,
+  `unsupported_type`); unexpected filesystem failures map to 500.
+
+  Closes Slice 5 of the KILLER #1 fatal-handler rollout.
+
+### Slice 5 — UltraHub off-site upload (after-hook only)
+
+After a successful snapshot, `BackupCreateRoute::handle()` fires:
+
+```php
+do_action('deckwp_connect_backup_created', $slug, $backup, 'route');
+```
+
+`$backup` is the response payload's `backup` sub-key; `$context` is
+`'route'` so a future listener can tell route-driven backups apart
+from install-batch ones.
+
+**No subsystem subscribes to this hook in the current connector.**
+The reservation is for the planned UltraHub off-site upload
+integration (`Integrations\UltraHubBackupSync` or similar). UltraHub
+itself doesn't expose its outbound API yet; once that lands on the
+UltraPack side, the subscriber subsystem will live in this connector
+and push the zip to remote object storage. Wire-protocol contract,
+auth scheme, and idempotency strategy will be defined alongside
+that subsystem — outside the scope of this connector release.
+
 ### Compatibility
 
 - WordPress 5.2+ (when WP introduced `wp_register_fatal_error_handler`).

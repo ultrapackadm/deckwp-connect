@@ -5,6 +5,7 @@ namespace DeckWP\Connect\REST;
 defined('ABSPATH') || exit;
 
 use DeckWP\Connect\REST\Auth\HmacVerifier;
+use DeckWP\Connect\REST\Routes\BackupCreateRoute;
 use DeckWP\Connect\REST\Routes\DeleteBackupRoute;
 use DeckWP\Connect\REST\Routes\InstallBatchRoute;
 use DeckWP\Connect\REST\Routes\InventoryRoute;
@@ -51,6 +52,12 @@ use DeckWP\Connect\REST\Routes\SsoLoginRoute;
  *     dashboard-driven maintenance mode on/off.
  *   - GET  /wp-json/deckwp/v1/maintenance — read current state.
  *     {@see MaintenanceRoute}.
+ *   - POST /wp-json/deckwp/v1/backup-create — create a plugin folder
+ *     snapshot on demand (off-cycle from install-batch). Powers the
+ *     dashboard's manual "Create backup" button. Fires a
+ *     `deckwp_connect_backup_created` action hook on success — reserved
+ *     for the planned UltraHub off-site upload integration.
+ *     {@see BackupCreateRoute}.
  *
  * ## Planned
  *
@@ -91,6 +98,9 @@ class Server
     /** @var MaintenanceRoute */
     private $maintenanceRoute;
 
+    /** @var BackupCreateRoute */
+    private $backupCreateRoute;
+
     public function __construct(
         HmacVerifier $verifier = null,
         ScanRoute $scanRoute = null,
@@ -99,7 +109,8 @@ class Server
         DeleteBackupRoute $deleteBackupRoute = null,
         InventoryRoute $inventoryRoute = null,
         SsoLoginRoute $ssoLoginRoute = null,
-        MaintenanceRoute $maintenanceRoute = null
+        MaintenanceRoute $maintenanceRoute = null,
+        BackupCreateRoute $backupCreateRoute = null
     ) {
         $this->verifier           = $verifier ?? new HmacVerifier();
         $this->scanRoute          = $scanRoute ?? new ScanRoute();
@@ -109,6 +120,7 @@ class Server
         $this->inventoryRoute     = $inventoryRoute ?? new InventoryRoute();
         $this->ssoLoginRoute      = $ssoLoginRoute ?? new SsoLoginRoute();
         $this->maintenanceRoute   = $maintenanceRoute ?? new MaintenanceRoute();
+        $this->backupCreateRoute  = $backupCreateRoute ?? new BackupCreateRoute();
     }
 
     /**
@@ -172,6 +184,12 @@ class Server
             'deckwp/v1',
             '/maintenance',
             $this->maintenanceRoute->args($permissionCallback)
+        );
+
+        register_rest_route(
+            'deckwp/v1',
+            '/backup-create',
+            $this->backupCreateRoute->args($permissionCallback)
         );
     }
 }
