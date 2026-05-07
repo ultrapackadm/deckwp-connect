@@ -11,6 +11,7 @@ use DeckWP\Connect\REST\Server as RestServer;
 use DeckWP\Connect\Scan\Scheduler as ScanScheduler;
 use DeckWP\Connect\Settings\Page as SettingsPage;
 use DeckWP\Connect\Updater\UpdateSuppressor;
+use DeckWP\Connect\Whitelabel\Branding as WhitelabelBranding;
 
 /**
  * Boots and registers every connector subsystem on `plugins_loaded`.
@@ -33,7 +34,7 @@ use DeckWP\Connect\Updater\UpdateSuppressor;
  *                                  install-batch, restore-backup,
  *                                  delete-backup, inventory, sso-login,
  *                                  maintenance, backup-create,
- *                                  set-managed-slugs.
+ *                                  set-managed-slugs, whitelabel.
  *                                  HMAC-protected (except sso-login,
  *                                  which uses a self-signed query token).
  *   - Maintenance\MaintenanceGuard — `init` hook that intercepts
@@ -54,11 +55,17 @@ use DeckWP\Connect\Updater\UpdateSuppressor;
  *                                  an operator clicking Update on the
  *                                  WP admin would bypass the connector's
  *                                  pre-update backup + smoke flow.
+ *   - Whitelabel\Branding        — rewrites plugin metadata in the WP
+ *                                  admin (Name, Description, Author,
+ *                                  AuthorURI, PluginURI) + hides
+ *                                  selected entries based on the
+ *                                  deckwp_whitelabel_config site option
+ *                                  pushed by the dashboard via
+ *                                  /wp-json/deckwp/v1/whitelabel.
  *
  * ## Subsystems planned (per CLAUDE.md, will be wired in upcoming sprints)
  *
  *   - Transport\InitHookFallback — bypass when /wp-json is blocked by host
- *   - Whitelabel\Branding        — rewrites plugin row metadata
  *   - Updater\SelfUpdater        — pulls connector self-updates
  *
  * ## Singleton
@@ -105,6 +112,7 @@ class Bootstrap
         (new ScanScheduler())->register();
         (new RestServer())->register();
         (new UpdateSuppressor())->register();
+        (new WhitelabelBranding())->register();
 
         // Maintenance mode guard — runs at `init` priority 1 so we
         // short-circuit the request before themes/plugins start their

@@ -280,6 +280,78 @@ that subsystem — outside the scope of this connector release.
   - `no_update` left untouched after plugin filter ran.
   - Bypass constant keeps everything in the response.
 
+- `Whitelabel\Branding` + `REST\Routes\WhitelabelRoute` — competitive
+  parity feature. Manage GPL ships it in every plan, ManageWP charges
+  for it, Zeebrar lists it as "coming soon"; without whitelabel, the
+  DeckWP FREE tier isn't vendable. The dashboard collects rebrand
+  config (plugin renames, hide-from-list, custom URLs) and pushes it
+  via `POST /wp-json/deckwp/v1/whitelabel`; the connector hooks
+  `all_plugins` at priority 9999 and rewrites the metadata WP renders
+  on the admin Plugins page.
+
+  ### Wire shape
+
+  ```jsonc
+  POST /wp-json/deckwp/v1/whitelabel
+  {
+    "plugins": {
+      "akismet/akismet.php": {
+        "name":        "Spam Shield",
+        "description": "Stops spam comments. Powered by DeckWP.",
+        "author":      "DeckWP",
+        "author_uri":  "https://deckwp.com",
+        "plugin_uri":  "https://deckwp.com/spam-shield",
+        "hide":        false
+      },
+      "wp-rocket/wp-rocket.php": { "hide": true }
+    },
+    "themes": {}
+  }
+  ```
+
+  Response: `{ "ok": true, "stored": { "plugins": 2, "themes": 0 } }`.
+
+  ### Sanitization
+
+  Strings stored verbatim (trusted-dashboard input; WP admin
+  templates auto-escape via `esc_html`/`esc_url` at render). Unknown
+  keys dropped, non-string values for known string keys dropped,
+  empty paths dropped, and entries that contributed nothing to the
+  override (after sanitization) skipped to avoid storage bloat.
+
+  ### Themes deferred to v2
+
+  The wire shape carries a `themes` key for forward-compat, but v1
+  always sanitizes it to `[]`. Theme rebrand has a different filter
+  surface (`wp_get_theme`, `themes_api_result`) and lower competitive
+  pressure than plugin rebrand — revisit when a customer asks.
+
+  ### Why PUSH not PULL
+
+  The original ROADMAP listed a `GET /api/v1/whitelabel?site_id=X`
+  pull endpoint on the dashboard. PUSH is simpler: real-time updates,
+  no connector cron to maintain, symmetry with the existing
+  `/maintenance` and `/set-managed-slugs` push routes.
+
+  ### Storage
+
+  `deckwp_whitelabel_config` site option (`update_site_option` —
+  network-wide on multisite, equivalent to wp_options on single-site).
+
+  ### Smoke (8/8 pass)
+
+  Internal-dispatch coverage:
+  - Happy path (3 plugins stored after sanitization) ✓
+  - Empty body → 200 + cleared option ✓
+  - Unknown / non-string fields dropped from sanitization ✓
+  - Empty plugin path dropped ✓
+  - Akismet rewrite of Name / Title / Description / Author /
+    AuthorName / AuthorURI / PluginURI ✓
+  - Version field NOT touched (we only override declared keys) ✓
+  - wp-rocket fully removed from the filtered array (hide: true) ✓
+  - Plugin without an override passes through unchanged ✓
+  - Empty option = no-op (filter returns array unchanged) ✓
+
 - `Install\Installer::install()` — defines
   `DECKWP_CONNECT_ALLOW_MANAGED_UPDATES = true` before refreshing the
   `update_plugins` transient and calling `Plugin_Upgrader::upgrade`.

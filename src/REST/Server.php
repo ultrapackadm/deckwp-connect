@@ -14,6 +14,7 @@ use DeckWP\Connect\REST\Routes\RestoreBackupRoute;
 use DeckWP\Connect\REST\Routes\ScanRoute;
 use DeckWP\Connect\REST\Routes\SetManagedSlugsRoute;
 use DeckWP\Connect\REST\Routes\SsoLoginRoute;
+use DeckWP\Connect\REST\Routes\WhitelabelRoute;
 
 /**
  * Registers the connector's inbound REST API surface under the
@@ -64,6 +65,12 @@ use DeckWP\Connect\REST\Routes\SsoLoginRoute;
  *     UpdateSuppressor's filtering of "Update available" notices in
  *     the WP admin so an operator can't bypass the dashboard's
  *     pre-update backup + smoke flow. {@see SetManagedSlugsRoute}.
+ *   - POST /wp-json/deckwp/v1/whitelabel — push the operator's
+ *     branding overrides for plugin metadata (Name, Description,
+ *     Author, AuthorURI, PluginURI) plus a hide-from-list flag.
+ *     The Whitelabel\Branding subsystem reads the resulting option
+ *     and rewrites WP's admin Plugins page in real time.
+ *     {@see WhitelabelRoute}.
  *
  * ## Planned
  *
@@ -110,6 +117,9 @@ class Server
     /** @var SetManagedSlugsRoute */
     private $setManagedSlugsRoute;
 
+    /** @var WhitelabelRoute */
+    private $whitelabelRoute;
+
     public function __construct(
         HmacVerifier $verifier = null,
         ScanRoute $scanRoute = null,
@@ -120,7 +130,8 @@ class Server
         SsoLoginRoute $ssoLoginRoute = null,
         MaintenanceRoute $maintenanceRoute = null,
         BackupCreateRoute $backupCreateRoute = null,
-        SetManagedSlugsRoute $setManagedSlugsRoute = null
+        SetManagedSlugsRoute $setManagedSlugsRoute = null,
+        WhitelabelRoute $whitelabelRoute = null
     ) {
         $this->verifier             = $verifier ?? new HmacVerifier();
         $this->scanRoute            = $scanRoute ?? new ScanRoute();
@@ -132,6 +143,7 @@ class Server
         $this->maintenanceRoute     = $maintenanceRoute ?? new MaintenanceRoute();
         $this->backupCreateRoute    = $backupCreateRoute ?? new BackupCreateRoute();
         $this->setManagedSlugsRoute = $setManagedSlugsRoute ?? new SetManagedSlugsRoute();
+        $this->whitelabelRoute      = $whitelabelRoute ?? new WhitelabelRoute();
     }
 
     /**
@@ -207,6 +219,12 @@ class Server
             'deckwp/v1',
             '/set-managed-slugs',
             $this->setManagedSlugsRoute->args($permissionCallback)
+        );
+
+        register_rest_route(
+            'deckwp/v1',
+            '/whitelabel',
+            $this->whitelabelRoute->args($permissionCallback)
         );
     }
 }
