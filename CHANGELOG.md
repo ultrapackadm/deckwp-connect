@@ -4,7 +4,18 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
-## [Unreleased]
+## [0.12.0] — 2026-05-07
+
+Headline release of the DeckWP rollout. Ships the multisite-aware
+fatal handler (KILLER #1, all 5 slices), the UpdateSuppressor +
+/set-managed-slugs flank-protection feature, the Whitelabel branding
+that closes FREE-tier viability, the heartbeat extension that ships
+the fatal log to the dashboard, and the SelfUpdater that destrava
+distribuição massiva.
+
+Backwards-compat: every change is additive on the wire (new optional
+fields on the heartbeat payload, new HMAC routes, new filter hooks).
+Pre-0.12 dashboards keep working.
 
 ### Added
 
@@ -426,8 +437,42 @@ that subsystem — outside the scope of this connector release.
   On pre-5.2 the source file's `class_exists('WP_Fatal_Error_Handler')`
   guard requires the core class explicitly.
 - PHP 7.4+, no new dependencies.
-- Pre-Unreleased dashboards continue working — drop-in is install
-  plumbing, no wire-protocol change yet.
+- Pre-0.12.0 dashboards continue working — every wire change in
+  this release is additive (new optional `fatal_log` field on the
+  heartbeat, new HMAC routes that pre-0.12 dashboards simply
+  don't call, new filter hooks). No breaking changes from 0.11.0.
+
+### Headline summary (the 5 features this release ships)
+
+  1. **Multisite-aware fatal handler** (KILLER #1) — drop-in at
+     `wp-content/fatal-error-handler.php` that auto-deactivates
+     a plugin when it crashes. Single-site detection (longest-prefix
+     match against `active_plugins`), multisite three-tier search
+     (network-active → current blog → switch_to_blog loop), OOM
+     detection with `oom: true` flag in the log, and a branded 503
+     splash that replaces WP's generic "experiencing technical
+     difficulties" page when we identify-and-deactivate a culprit.
+  2. **UpdateSuppressor + /set-managed-slugs** — hides "Update
+     available" notices in WP admin for plugins under DeckWP
+     management, so an operator can't bypass the dashboard's
+     pre-update backup + smoke flow by clicking Update on the
+     Plugins page directly. `Install\Installer::install` defines
+     a bypass constant so the dashboard's own update flow keeps
+     working.
+  3. **Whitelabel\Branding + /whitelabel** — rewrites plugin
+     metadata in the WP admin (Name, Description, Author, etc.)
+     based on a config the dashboard pushes. Closes the FREE-tier
+     viability flank — Manage GPL ships whitelabel in every plan,
+     ManageWP paywalls it.
+  4. **Heartbeat carries fatal log** — `Heartbeat\Scheduler::buildPayload`
+     ships the drop-in's `deckwp_fatal_log` so the dashboard can
+     fire `FatalHandlerTrippedNotification` for each new entry,
+     deduped by `ts` watermark.
+  5. **`Updater\SelfUpdater`** — connector polls the dashboard's
+     `/api/v1/sites/{site}/connector/latest` endpoint on every
+     `update_plugins` transient refresh and offers the new
+     version through WP's built-in upgrade flow. Operator clicks
+     Update on the Plugins page, no per-site redeploy.
 
 ## [0.11.0] — 2026-05-06
 
