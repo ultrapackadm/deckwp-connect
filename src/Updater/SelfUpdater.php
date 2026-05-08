@@ -177,7 +177,7 @@ class SelfUpdater
      */
     private function pollDashboard(): ?array
     {
-        $stored = $this->settings->get();
+        $stored = $this->settings->all();
         $platformUrl = isset($stored['platform_url']) ? rtrim((string) $stored['platform_url'], '/') : '';
         $siteId = isset($stored['site_id']) ? (string) $stored['site_id'] : '';
         $secretBase64 = isset($stored['hmac_secret']) ? (string) $stored['hmac_secret'] : '';
@@ -228,8 +228,13 @@ class SelfUpdater
      * Read the connector plugin's currently-installed version from
      * its main file header. Falls back to '' if WP's file API
      * isn't loaded (very early failure modes).
+     *
+     * `protected` (not private) so smoke tests can override via a
+     * subclass to simulate older local versions without touching the
+     * plugin header. PHP private methods are not subclass-overridable
+     * because late static binding doesn't apply to them.
      */
-    private function getLocalPluginVersion(): string
+    protected function getLocalPluginVersion(): string
     {
         if (! function_exists('get_plugin_data')) {
             $adminFile = ABSPATH . 'wp-admin/includes/plugin.php';
