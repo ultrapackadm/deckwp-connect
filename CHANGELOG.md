@@ -4,6 +4,71 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.12.1] — 2026-05-07
+
+Hotfix release. Two bugs caught by the post-v0.12.0 real-world
+SelfUpdater smoke (against the public GH Release that v0.12.0
+just shipped). Pest tests against the dashboard endpoint passed
+6/6 with `Http::fake()`, but the connector's own polling code
+path is not exercised by those tests — the bugs only manifested
+when an actual paired site reached out to the dashboard. Without
+this hotfix, any v0.12.0 install would silently fail to ever
+discover an update offer (the SelfUpdater filter would throw
+during `wp_update_plugins()` — caught by the fatal handler
+drop-in but never inject the update entry).
+
+### Fixed
+
+- `Updater\SelfUpdater::pollDashboard()` called
+  `$this->settings->get()` with no arguments. `Settings::get` is
+  the single-key reader (`get(string $key, $default)`); the right
+  call for the full settings array is `Settings::all()`. Switched
+  over.
+
+  Symptom under v0.12.0: an `ArgumentCountError` thrown the first
+  time WP refreshed the `update_plugins` site transient — caught
+  by the connector's drop-in fatal handler before reaching the
+  user, but the SelfUpdater filter never completed and the update
+  offer never got injected.
+
+- `Updater\SelfUpdater::getLocalPluginVersion()` was declared
+  `private`. PHP `private` methods aren't subclass-overridable —
+  late static binding doesn't apply, so a smoke harness that
+  subclasses SelfUpdater (to simulate `version=0.11.0` for testing
+  the upgrade flow without a real version downgrade) had its
+  override silently ignored. Promoted to `protected` with an
+  explicit docblock note.
+
+  No production impact; this only affected our test harness.
+  Bumped to ship together with the other fix because they were
+  caught in the same smoke session and the diff is one line each.
+
+### Compatibility
+
+- WordPress 5.6+, PHP 7.4+
+- No breaking changes from v0.12.0 — this is a pure bugfix.
+- Pre-v0.12.0 dashboards never call SelfUpdater's poll endpoint;
+  this fix is irrelevant to them.
+
+### Smoke
+
+After fixes, end-to-end real-world chain validated against the
+test site (deckwp-test-wp.test):
+
+  1. Connector → dashboard `GET /api/v1/sites/{site}/connector/latest`
+     HMAC-signed → HTTP 200 with payload (version, download_url,
+     tested_wp, requires_php, changelog_url, published_at).
+  2. `fetchLatestEnvelope()` populates the 1h positive cache.
+  3. Subclass-mocked `getLocalPluginVersion → '0.11.0'` returns,
+     forcing `version_compare('0.12.0', '0.11.0', '<=')` to false.
+  4. `injectUpdateOffer` populates
+     `$transient->response['deckwp-connect/deckwp-connect.php']`
+     with new_version + package URL pointing at the public GH
+     Release zip asset.
+
+The download_url itself was independently smoke-tested against
+the public GH zip URL (HTTP 200, 115281 bytes, matching SHA256).
+
 ## [0.12.0] — 2026-05-07
 
 Headline release of the DeckWP rollout. Ships the multisite-aware
