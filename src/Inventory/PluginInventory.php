@@ -86,11 +86,58 @@ class PluginInventory
      * Returns a map keyed by the same plugin-file identifier WP uses for
      * `get_plugins()`.
      *
+     * Behavior:
+     *
+     *   1. If the transient is missing/stale (older than 6 hours OR
+     *      response not yet populated), force a wp.org poll via
+     *      `wp_update_plugins()`. That's the same call WP cron runs
+     *      every 12 hours, but on-demand. Returns nothing — populates
+     *      the transient as a side effect.
+     *   2. If `Updater\UpdateSuppressor` is active on this install, its
+     *      `site_transient_update_plugins` filter strips managed slugs
+     *      from the response before we read it. That's correct for the
+     *      WP admin Updates page (we don't want operators
+     *      double-pressing Update there) but wrong for inventory
+     *      reporting — the dashboard NEEDS to know which plugins have
+     *      updates so it can surface the per-row "Update" button.
+     *      The bypass constant makes the filter pass-through for the
+     *      duration of this read.
+     *
+     * Both fixes are required to surface "12 updates available" in
+     * the dashboard for sites with an under-firing wp-cron and/or any
+     * managed_slugs configured.
+     *
      * @return array<string, array<string, mixed>>
      */
     private function updatePayload(): array
     {
+        // 1. Set the UpdateSuppressor bypass FIRST. wp_update_plugins()
+        // internally calls get_site_transient(), which fires the
+        // `site_transient_update_plugins` filter — without the bypass
+        // set up front, that internal read would see the filtered
+        // (stripped) response, and any managed slugs would never make
+        // it into the freshness comparison.
+        if (! defined('DECKWP_CONNECT_ALLOW_MANAGED_UPDATES')) {
+            define('DECKWP_CONNECT_ALLOW_MANAGED_UPDATES', true);
+        }
+
+        // 2. Ensure the transient is fresh. wp_update_plugins() is a
+        // no-op when cached data is < 1h old; otherwise it polls
+        // wp.org and re-populates the transient. Making the call
+        // here costs ~200ms-1s once per inventory pull, but ensures
+        // operators don't see stale "0 outdated" when wp-cron isn't
+        // firing reliably (DISABLE_WP_CRON=true without an external
+        // cron is the common cause).
+        if (function_exists('wp_update_plugins')) {
+            wp_update_plugins();
+        }
+
+        // 3. Read the transient. UpdateSuppressor's hook still runs
+        // on the read but checks the bypass constant we set above
+        // and returns the raw response without stripping managed
+        // slugs.
         $transient = get_site_transient('update_plugins');
+
         if (! is_object($transient) || ! isset($transient->response) || ! is_array($transient->response)) {
             return [];
         }

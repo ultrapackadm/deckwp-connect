@@ -4,6 +4,42 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.12.2] — 2026-05-08
+
+Hotfix. The dashboard's "outdated plugins" badge + per-row Update
+buttons stayed permanently empty for sites where wp-cron isn't
+firing reliably (DISABLE_WP_CRON=true without an external cron is
+the common cause), and got falsely emptied for sites with any
+managed slugs configured. Both stem from `PluginInventory`
+returning all-null `new_version` fields.
+
+### Fixed
+
+- `Inventory\PluginInventory::updatePayload()` now calls
+  `wp_update_plugins()` before reading the `update_plugins`
+  site transient. wp_update_plugins is a no-op when the cached
+  data is < 1h old; when it's stale (or missing entirely on a
+  fresh install before WP cron's first 12h tick), it forces a
+  fresh wp.org poll and re-populates the transient. Without this
+  call, sites with broken/disabled wp-cron showed every plugin as
+  "up to date" forever, because the transient never refreshed.
+
+- `PluginInventory::updatePayload()` also now sets
+  `DECKWP_CONNECT_ALLOW_MANAGED_UPDATES` before reading the
+  transient, bypassing `Updater\UpdateSuppressor::filterTransient()`
+  for the duration of the read. UpdateSuppressor's job is to hide
+  the WP admin "Update available" badge for plugins DeckWP
+  manages remotely (so operators don't double-press Update from
+  WP admin). It was also stripping those entries from the
+  inventory snapshot we send to the dashboard — so the dashboard
+  saw `new_version: null` for managed plugins and never offered
+  the per-row Update button. Same constant the install flow
+  already uses for the same reason.
+
+- The fix combo turns the previously-empty "outdated" header
+  badge into ":N outdated" the next time the dashboard pulls
+  inventory (Atualizar button) or receives a heartbeat.
+
 ## [0.12.1] — 2026-05-07
 
 Hotfix release. Two bugs caught by the post-v0.12.0 real-world
