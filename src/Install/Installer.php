@@ -168,8 +168,16 @@ class Installer
         }
 
         $pluginFile = $this->findPluginFile($slug);
+
+        // Fresh-install path. The plugin isn't on disk yet, so there's
+        // nothing to upgrade — we either grab the package URL the
+        // dashboard handed us (premium catalog flow) or look the slug
+        // up on wp.org and download from there. Snapshot + smoke check
+        // don't apply (no `before` state to capture, and the smoke
+        // checker compares activation state before/after, which is
+        // meaningless on a brand-new install).
         if ($pluginFile === null) {
-            return $this->failure($slug, 'Plugin not installed on this WordPress install.');
+            return $this->runFreshInstall($slug, $downloadUrl);
         }
 
         $beforeVersion = $this->readPluginVersion($pluginFile);
@@ -445,6 +453,117 @@ class Installer
         $upgrader = new \Plugin_Upgrader(new \Automatic_Upgrader_Skin());
 
         return $upgrader->upgrade($pluginFile);
+    }
+
+    /**
+     * Fresh install — the plugin isn't on disk yet, so {@see runUpgrade}
+     * has nothing to upgrade. Resolves a download URL (either the one
+     * the dashboard sent for premium catalog plugins, or one looked
+     * up via {@see plugins_api()} for free wp.org plugins) and asks
+     * {@see \Plugin_Upgrader::install()} to download + extract +
+     * place under `wp-content/plugins/`.
+     *
+     * Differs from `runUpgrade` in three ways:
+     *   1. Calls `install()` instead of `upgrade()` — install also
+     *      handles the case where the destination doesn't exist yet.
+     *   2. Doesn't take a snapshot. Nothing to back up; if the
+     *      install fails we leave the WP install in its prior empty
+     *      state, which is exactly the rollback target.
+     *   3. Doesn't run the smoke check. The smoke check compares
+     *      pre/post activation state to detect upgrades that broke
+     *      the plugin's main file — that comparison is degenerate
+     *      for a plugin we're seeing for the first time.
+     *
+     * The new plugin is left INACTIVE. The operator activates it
+     * via WP admin or the dashboard's plugin-row toggle. Auto-activation
+     * is not the right default — it would activate a plugin the
+     * operator has never seen the settings/landing page for, which
+     * is how WordPress users get surprised by "this plugin took over
+     * my admin" defaults.
+     *
+     * @return array<string, mixed>
+     */
+    private function runFreshInstall(string $slug, string $downloadUrl): array
+    {
+        // Resolve the package URL. Premium catalog flow already
+        // handed us one; free flow needs a wp.org lookup.
+        if ($downloadUrl === '') {
+            if (! function_exists('plugins_api')) {
+                require_once ABSPATH . 'wp-admin/includes/plugin-install.php';
+            }
+            if (! function_exists('plugins_api')) {
+                return $this->failure($slug, 'Could not load wp-admin/includes/plugin-install.php to resolve the wp.org download URL.');
+            }
+
+            $info = plugins_api(
+                'plugin_information',
+                [
+                    'slug' => $slug,
+                    // Skip every heavy field — we only need download_link.
+                    // wp.org's plugin_information returns ~150KB by default
+                    // when sections + reviews are included; trimming here
+                    // keeps the install request snappy on slow hosts.
+                    'fields' => [
+                        'sections' => false,
+                        'screenshots' => false,
+                        'reviews' => false,
+                        'banners' => false,
+                        'icons' => false,
+                        'contributors' => false,
+                    ],
+                ]
+            );
+
+            if (is_wp_error($info)) {
+                return $this->failure(
+                    $slug,
+                    sprintf('Could not look up "%s" on wp.org: %s', $slug, $info->get_error_message())
+                );
+            }
+
+            $downloadUrl = isset($info->download_link) ? (string) $info->download_link : '';
+            if ($downloadUrl === '') {
+                return $this->failure($slug, sprintf('wp.org returned no download_link for slug "%s" — is the plugin still on the directory?', $slug));
+            }
+        }
+
+        $upgrader = new \Plugin_Upgrader(new \Automatic_Upgrader_Skin());
+        $result   = $upgrader->install($downloadUrl);
+
+        if (is_wp_error($result)) {
+            return $this->failure($slug, $this->formatWpError($result));
+        }
+
+        // `install()` returns true on success, null/false on failure
+        // without a WP_Error (rare — usually means the unzip phase
+        // bailed silently because of FS permissions).
+        if ($result !== true) {
+            return $this->failure($slug, 'Plugin_Upgrader::install() returned a non-truthy result without a WP_Error — usually a filesystem-permissions issue. Check wp-content/plugins/ is writable by the web user.');
+        }
+
+        // Verify the plugin actually landed on disk before reporting
+        // success. install() can return true while the unzip target
+        // ended up under a different folder name (slug doesn't always
+        // match the plugin's main directory — e.g. wp.org's
+        // "wp-mail-smtp" zip extracts as "wp-mail-smtp-pro" for the
+        // pro release). If we can't find it, surface that loudly so
+        // the dashboard reports the install as failed instead of
+        // silently dropping it.
+        $newPluginFile = $this->findPluginFile($slug);
+        if ($newPluginFile === null) {
+            return $this->failure(
+                $slug,
+                sprintf('Install completed but no plugin folder named "%s" was found under wp-content/plugins/. The package may extract to a different folder name.', $slug)
+            );
+        }
+
+        return [
+            'slug'            => $slug,
+            'status'          => 'installed',
+            'version_before'  => '',
+            'version_after'   => $this->readPluginVersion($newPluginFile),
+            'error'           => null,
+        ];
     }
 
     /**

@@ -4,6 +4,46 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.13.0] — 2026-05-09
+
+Adds the fresh-install path for `/install-batch`. Up to v0.12.2 the
+endpoint was upgrade-only — `Installer::installOne()` returned
+`Plugin not installed on this WordPress install.` for any slug not
+already present on disk. The dashboard's new Library page (DeckWP
+v0.5+) needs to install plugins the operator picked from the wp.org
+directory but doesn't have on the WP install yet, which the
+upgrade-only path can't service.
+
+### Added
+
+- `Installer::runFreshInstall($slug, $downloadUrl)` — when the slug
+  isn't already on disk, resolve the wp.org `download_link` via
+  `plugins_api('plugin_information')` (or use the `download_url`
+  from the request body if the dashboard sent one for premium
+  catalog plugins), then call `Plugin_Upgrader::install()`. The
+  newly-installed plugin is left INACTIVE — operator activates via
+  WP admin or the dashboard's plugin-row toggle.
+
+- Verification step that calls `findPluginFile($slug)` AFTER the
+  install. If `Plugin_Upgrader::install()` returns true but the
+  zip extracted to a folder name that doesn't match the slug
+  (rare, but happens with some plugins whose package extracts
+  with a `-pro` suffix), the response surfaces a clear failure
+  instead of pretending success.
+
+### Changed
+
+- `installOne()` branches on `findPluginFile($slug)`: if found, the
+  existing upgrade path runs (snapshot → upgrade → smoke check →
+  optional rollback); if not found, the new fresh-install path
+  takes over (no snapshot, no smoke — neither makes sense for a
+  brand-new install).
+
+- `Installer.php` class-level docblock updated to mention the new
+  "fresh install" item shape (no input changes — just `download_url`
+  becomes optional and the WP install no longer needs the slug
+  pre-installed).
+
 ## [0.12.2] — 2026-05-08
 
 Hotfix. The dashboard's "outdated plugins" badge + per-row Update
