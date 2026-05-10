@@ -166,11 +166,20 @@ class Installer
             return $this->failure('', 'Missing slug.');
         }
 
-        if ($type !== 'plugin') {
-            // Theme + core support are explicit non-goals for v0.4.0.
-            // The dashboard side filters these out before calling us;
-            // this branch is just defense in depth.
-            return $this->failure($slug, sprintf('Unsupported type "%s" — handles plugins only.', $type));
+        if ($type !== 'plugin' && $type !== 'theme') {
+            // Core support remains an explicit non-goal — we never
+            // touch wp_version from this code path. Plugins and
+            // themes are the supported items.
+            return $this->failure($slug, sprintf('Unsupported type "%s" — handles plugins and themes only.', $type));
+        }
+
+        if ($type === 'theme') {
+            // Theme path is separate from plugin — different upgrader,
+            // different activation semantics (switch_theme replaces
+            // the live theme rather than adding to the active set),
+            // no backup/smoke check yet. Handled in its own method
+            // for clarity; the plugin path below is unchanged.
+            return $this->installOneTheme($slug, $downloadUrl, $activateAfterInstall);
         }
 
         $pluginFile = $this->findPluginFile($slug);
@@ -683,5 +692,277 @@ class Installer
         $msg = (string) $err->get_error_message();
 
         return $code !== '' ? sprintf('%s: %s', $code, $msg) : $msg;
+    }
+
+    /* =============================================================
+     | Theme path — parallel implementation to the plugin path above.
+     |
+     | Differs in three ways from plugins:
+     |   1. Different upgrader (`Theme_Upgrader`) and different
+     |      package lookup (`themes_api('theme_information')`).
+     |   2. Activation = `switch_theme($stylesheet)`. There's only
+     |      ONE active theme at a time — switching deactivates the
+     |      previous theme. The operator's "Activate after install"
+     |      checkbox carries the same opt-in semantics it has for
+     |      plugins, but with a more destructive default: a theme
+     |      switch immediately replaces the live frontend's look.
+     |   3. No backup / smoke check yet. Theme upgrades + activations
+     |      get added to Sprint 4's snapshot lifecycle in a later
+     |      release; for v0.16 we install and (optionally) switch,
+     |      no rollback target.
+     |
+     | Same envelope shape as the plugin path so the dashboard's
+     | InstallFromLibraryJob can reuse its existing result parser
+     | (status / error / active / activation_error).
+     ============================================================= */
+
+    /**
+     * @param  string  $slug         wp.org theme slug (e.g. "twentytwentyfour")
+     * @param  string  $downloadUrl  optional explicit package URL
+     * @param  bool    $activateAfterInstall  switch_theme to $slug on success
+     * @return array<string, mixed>
+     */
+    private function installOneTheme(string $slug, string $downloadUrl, bool $activateAfterInstall): array
+    {
+        $this->loadThemeUpgraderClasses();
+
+        $stylesheet = $this->findThemeStylesheet($slug);
+
+        // Fresh install path — theme not yet on disk.
+        if ($stylesheet === null) {
+            return $this->runFreshInstallTheme($slug, $downloadUrl, $activateAfterInstall);
+        }
+
+        // Upgrade path — theme exists, run Theme_Upgrader::upgrade().
+        // Skipping snapshot + smoke check (Sprint 4 lifecycle work).
+        $beforeVersion = $this->readThemeVersion($stylesheet);
+
+        $upgrader = new \Theme_Upgrader(new \Automatic_Upgrader_Skin());
+        $result = $upgrader->upgrade($stylesheet);
+
+        if (is_wp_error($result)) {
+            return $this->failure($slug, $this->formatWpError($result));
+        }
+
+        // false from Theme_Upgrader::upgrade() = nothing to upgrade
+        // (already on latest). Map to `unchanged` so the dashboard
+        // doesn't show false-success on a no-op.
+        if ($result === false) {
+            return $this->withThemeActivation(
+                $slug,
+                $stylesheet,
+                'unchanged',
+                $beforeVersion,
+                $beforeVersion,
+                null,
+                $activateAfterInstall
+            );
+        }
+
+        $afterVersion = $this->readThemeVersion($stylesheet);
+
+        return $this->withThemeActivation(
+            $slug,
+            $stylesheet,
+            'installed',
+            $beforeVersion,
+            $afterVersion,
+            null,
+            $activateAfterInstall
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function runFreshInstallTheme(string $slug, string $downloadUrl, bool $activateAfterInstall): array
+    {
+        if ($downloadUrl === '') {
+            if (! function_exists('themes_api')) {
+                require_once ABSPATH . 'wp-admin/includes/theme.php';
+            }
+            if (! function_exists('themes_api')) {
+                return $this->failure($slug, 'Could not load wp-admin/includes/theme.php to resolve the wp.org download URL.');
+            }
+
+            $info = themes_api(
+                'theme_information',
+                [
+                    'slug' => $slug,
+                    // Strip everything but the package URL — theme
+                    // information returns a fat payload by default
+                    // (screenshots, sections, ratings, etc.) and we
+                    // only need download_link.
+                    'fields' => [
+                        'sections' => false,
+                        'screenshot_url' => false,
+                        'ratings' => false,
+                        'reviews_url' => false,
+                        'parent' => false,
+                        'template' => false,
+                    ],
+                ]
+            );
+
+            if (is_wp_error($info)) {
+                return $this->failure(
+                    $slug,
+                    sprintf('Could not look up theme "%s" on wp.org: %s', $slug, $info->get_error_message())
+                );
+            }
+
+            $downloadUrl = isset($info->download_link) ? (string) $info->download_link : '';
+            if ($downloadUrl === '') {
+                return $this->failure($slug, sprintf('wp.org returned no download_link for theme slug "%s" — is the theme still on the directory?', $slug));
+            }
+        }
+
+        $upgrader = new \Theme_Upgrader(new \Automatic_Upgrader_Skin());
+        $result   = $upgrader->install($downloadUrl);
+
+        if (is_wp_error($result)) {
+            return $this->failure($slug, $this->formatWpError($result));
+        }
+
+        if ($result !== true) {
+            return $this->failure($slug, 'Theme_Upgrader::install() returned a non-truthy result without a WP_Error — usually a filesystem-permissions issue. Check wp-content/themes/ is writable by the web user.');
+        }
+
+        $stylesheet = $this->findThemeStylesheet($slug);
+        if ($stylesheet === null) {
+            return $this->failure(
+                $slug,
+                sprintf('Install completed but no theme folder named "%s" was found under wp-content/themes/. The package may extract to a different folder name.', $slug)
+            );
+        }
+
+        return $this->withThemeActivation(
+            $slug,
+            $stylesheet,
+            'installed',
+            '',
+            $this->readThemeVersion($stylesheet),
+            null,
+            $activateAfterInstall
+        );
+    }
+
+    /**
+     * Apply (or skip) the `switch_theme()` step and return the
+     * shape-consistent result envelope.
+     *
+     * Theme activation is destructive — it replaces the active
+     * theme. That's not a thing we can roll back without remembering
+     * the previous active theme; for v0.16 we just do the switch
+     * and report the outcome. If the operator wants the old theme
+     * back, they activate it manually (or via a future
+     * /theme-switch dashboard action).
+     *
+     * @return array<string, mixed>
+     */
+    private function withThemeActivation(
+        string $slug,
+        string $stylesheet,
+        string $status,
+        string $beforeVersion,
+        string $afterVersion,
+        ?string $error,
+        bool $activateAfterInstall
+    ): array {
+        $row = [
+            'slug'           => $slug,
+            'status'         => $status,
+            'version_before' => $beforeVersion,
+            'version_after'  => $afterVersion,
+            'error'          => $error,
+        ];
+
+        if (! $activateAfterInstall) {
+            return $row;
+        }
+
+        // switch_theme() returns void — re-read the active stylesheet
+        // afterward to detect cases where a `switch_theme` action
+        // hook redirected to a different theme (rare, but happens
+        // with multi-site network themes).
+        if (! function_exists('switch_theme')) {
+            require_once ABSPATH . 'wp-includes/theme.php';
+        }
+
+        switch_theme($stylesheet);
+
+        $current = function_exists('get_stylesheet') ? get_stylesheet() : '';
+        $activated = ($current === $stylesheet);
+
+        $row['active'] = $activated;
+        $row['activation_error'] = $activated
+            ? null
+            : sprintf('switch_theme(%s) did not take effect — active stylesheet is now %s.', $stylesheet, $current ?: 'unknown');
+
+        return $row;
+    }
+
+    /**
+     * Locate a theme on disk by wp.org slug. Themes are keyed by
+     * stylesheet (directory name); the slug usually matches but not
+     * always (e.g. forked themes, child themes with custom directory
+     * names).
+     *
+     * Walks `wp_get_themes()` and matches on stylesheet AND on the
+     * WP Theme object's "TextDomain" header as a fallback.
+     */
+    private function findThemeStylesheet(string $slug): ?string
+    {
+        if (! function_exists('wp_get_themes')) {
+            return null;
+        }
+
+        $themes = wp_get_themes();
+        foreach ($themes as $stylesheet => $theme) {
+            if ((string) $stylesheet === $slug) {
+                return (string) $stylesheet;
+            }
+            $textDomain = method_exists($theme, 'get') ? (string) $theme->get('TextDomain') : '';
+            if ($textDomain !== '' && $textDomain === $slug) {
+                return (string) $stylesheet;
+            }
+        }
+
+        return null;
+    }
+
+    private function readThemeVersion(string $stylesheet): string
+    {
+        if (! function_exists('wp_get_theme')) {
+            return '';
+        }
+        $theme = wp_get_theme($stylesheet);
+        if (! $theme || ! $theme->exists()) {
+            return '';
+        }
+
+        return (string) $theme->get('Version');
+    }
+
+    /**
+     * Theme_Upgrader + Automatic_Upgrader_Skin only autoload during
+     * admin pageloads. REST and cron contexts need them pulled in
+     * manually. Same shape as {@see self::loadCoreUpgraderClasses()}
+     * for plugins — different file (`class-theme-upgrader.php`) is
+     * the only addition.
+     */
+    private function loadThemeUpgraderClasses(): void
+    {
+        require_once ABSPATH . 'wp-admin/includes/file.php';
+        require_once ABSPATH . 'wp-admin/includes/misc.php';
+        require_once ABSPATH . 'wp-admin/includes/theme.php';
+        require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+
+        if (! class_exists('Theme_Upgrader')) {
+            require_once ABSPATH . 'wp-admin/includes/class-theme-upgrader.php';
+        }
+        if (! class_exists('Automatic_Upgrader_Skin')) {
+            require_once ABSPATH . 'wp-admin/includes/class-automatic-upgrader-skin.php';
+        }
     }
 }

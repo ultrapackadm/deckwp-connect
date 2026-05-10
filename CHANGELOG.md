@@ -4,6 +4,59 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.16.0] — 2026-05-10
+
+Adds theme install + upgrade to `/install-batch`. Until now the
+endpoint rejected `type: "theme"` items with `Unsupported type
+"theme" — handles plugins only.` The dashboard's Library page
+already browses + opens detail modals for themes; this release
+closes the loop so "Install on…" actually works on a theme.
+
+### Added
+
+- `Installer::installOneTheme($slug, $downloadUrl, $activateAfterInstall)`
+  — parallel implementation to the plugin path. Uses
+  `Theme_Upgrader::install()` for fresh installs and
+  `Theme_Upgrader::upgrade($stylesheet)` for upgrades. Resolves
+  the wp.org download URL via `themes_api('theme_information')`
+  when the dashboard didn't send a custom `download_url`.
+- `runFreshInstallTheme()` — mirror of `runFreshInstall()` but
+  for themes. Skips the snapshot/smoke path (Sprint 4 lifecycle
+  work for themes lands later).
+- `withThemeActivation()` — applies `switch_theme($stylesheet)`
+  when the operator opted into "Activate after install". Theme
+  activation is destructive (replaces the live frontend's look),
+  so the dashboard's checkbox semantics carry forward unchanged —
+  it's opt-in for a reason.
+- `findThemeStylesheet($slug)` + `readThemeVersion($stylesheet)`
+  — analogues to `findPluginFile()` / `readPluginVersion()`. The
+  stylesheet lookup walks `wp_get_themes()` matching on the
+  stylesheet directory AND the theme's TextDomain header as a
+  fallback (some themes have custom dir names that diverge from
+  their wp.org slug).
+- `loadThemeUpgraderClasses()` — pulls in `Theme_Upgrader` +
+  `Automatic_Upgrader_Skin` for REST/cron contexts where they
+  don't autoload.
+
+### Changed
+
+- `Installer::installOne()` no longer returns "Unsupported type
+  'theme'" — accepts `type: "plugin" | "theme"`, dispatches to
+  the right path. `type: "core"` and any other value still
+  returns the unsupported-type failure.
+
+### Out of scope (deferred)
+
+- Pre-update snapshot + post-upgrade smoke check for themes —
+  Sprint 4's BackupManager.snapshot() currently zips a plugin
+  folder; theme snapshots need a parallel BackupManager method
+  that knows about parent/child theme dependencies.
+- `/theme-switch` REST route — the post-install "Activate now"
+  button in the dashboard's progress modal stays hidden for
+  themes in this release. Activation happens inline at install
+  time via the `active` flag; switching an already-installed
+  theme is operator-driven (WP admin) for now.
+
 ## [0.15.0] — 2026-05-10
 
 Adds `connector_version` to the heartbeat + inventory payloads.
