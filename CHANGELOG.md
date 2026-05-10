@@ -4,6 +4,41 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.14.0] — 2026-05-09
+
+Adds remote activation. The Library install flow can now activate
+a plugin in the same dispatch as the install (via `active: true`
+on the `/install-batch` item), and a new `/plugin-toggle` route
+lets the dashboard activate/deactivate independently — powering the
+Library install-progress modal's "Activate now" button on succeeded
+rows where the operator left the install-time checkbox unchecked.
+
+### Added
+
+- `POST /wp-json/deckwp/v1/plugin-toggle` — accepts
+  `{ slug: string, active: bool }`. Activates via `activate_plugin()`
+  or deactivates via `deactivate_plugins()`, surfacing any WP_Error
+  from the activation hook verbatim. Idempotent (toggling to the
+  current state is a no-op success). Re-reads `is_plugin_active()`
+  after the call to detect activation hooks that silently refuse to
+  flip the state.
+
+- `Installer::installOne()` reads a new `active` flag on each
+  `/install-batch` item. When set, `runFreshInstall()` runs
+  `activate_plugin()` on the freshly-installed plugin and reports
+  `active` + `activation_error` fields back in the per-item row.
+  Activation failure does NOT unwind the install — the bytes are
+  on disk, the operator just gets a clear "activation hook errored"
+  message and can fix it from WP admin. The flag is upgrade-path
+  no-op (preserving Plugin_Upgrader::upgrade()'s existing behavior).
+
+### Changed
+
+- `Server.php` registers the new route and updates the route inventory
+  in its class-level docblock; `plugin-action` from the v0.4
+  "Planned" section moves to v0.14 (Active), `plugin-delete`
+  takes its place on the planned list.
+
 ## [0.13.0] — 2026-05-09
 
 Adds the fresh-install path for `/install-batch`. Up to v0.12.2 the

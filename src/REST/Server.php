@@ -10,6 +10,7 @@ use DeckWP\Connect\REST\Routes\DeleteBackupRoute;
 use DeckWP\Connect\REST\Routes\InstallBatchRoute;
 use DeckWP\Connect\REST\Routes\InventoryRoute;
 use DeckWP\Connect\REST\Routes\MaintenanceRoute;
+use DeckWP\Connect\REST\Routes\PluginToggleRoute;
 use DeckWP\Connect\REST\Routes\RestoreBackupRoute;
 use DeckWP\Connect\REST\Routes\ScanRoute;
 use DeckWP\Connect\REST\Routes\SetManagedSlugsRoute;
@@ -71,11 +72,15 @@ use DeckWP\Connect\REST\Routes\WhitelabelRoute;
  *     The Whitelabel\Branding subsystem reads the resulting option
  *     and rewrites WP's admin Plugins page in real time.
  *     {@see WhitelabelRoute}.
+ *   - POST /wp-json/deckwp/v1/plugin-toggle — activate or deactivate
+ *     a single plugin. Powers the dashboard's Library "Activate
+ *     after install" checkbox + the post-install "Activate now"
+ *     button. Idempotent. {@see PluginToggleRoute}.
  *
  * ## Planned
  *
- *   - POST /wp-json/deckwp/v1/plugin-action — activate/deactivate/
- *     delete a single plugin.
+ *   - POST /wp-json/deckwp/v1/plugin-delete — uninstall a plugin
+ *     (file removal + uninstall hook).
  *   - POST /wp-json/deckwp/v1/maintenance — toggle the branded
  *     maintenance page.
  *   - POST /wp-json/deckwp/v1/sso-login — issue a one-shot login URL.
@@ -120,6 +125,9 @@ class Server
     /** @var WhitelabelRoute */
     private $whitelabelRoute;
 
+    /** @var PluginToggleRoute */
+    private $pluginToggleRoute;
+
     public function __construct(
         HmacVerifier $verifier = null,
         ScanRoute $scanRoute = null,
@@ -131,7 +139,8 @@ class Server
         MaintenanceRoute $maintenanceRoute = null,
         BackupCreateRoute $backupCreateRoute = null,
         SetManagedSlugsRoute $setManagedSlugsRoute = null,
-        WhitelabelRoute $whitelabelRoute = null
+        WhitelabelRoute $whitelabelRoute = null,
+        PluginToggleRoute $pluginToggleRoute = null
     ) {
         $this->verifier             = $verifier ?? new HmacVerifier();
         $this->scanRoute            = $scanRoute ?? new ScanRoute();
@@ -144,6 +153,7 @@ class Server
         $this->backupCreateRoute    = $backupCreateRoute ?? new BackupCreateRoute();
         $this->setManagedSlugsRoute = $setManagedSlugsRoute ?? new SetManagedSlugsRoute();
         $this->whitelabelRoute      = $whitelabelRoute ?? new WhitelabelRoute();
+        $this->pluginToggleRoute    = $pluginToggleRoute ?? new PluginToggleRoute();
     }
 
     /**
@@ -225,6 +235,12 @@ class Server
             'deckwp/v1',
             '/whitelabel',
             $this->whitelabelRoute->args($permissionCallback)
+        );
+
+        register_rest_route(
+            'deckwp/v1',
+            '/plugin-toggle',
+            $this->pluginToggleRoute->args($permissionCallback)
         );
     }
 }

@@ -150,6 +150,12 @@ class Installer
         $type = isset($item['type']) ? (string) $item['type'] : 'plugin';
         $downloadUrl = isset($item['download_url']) ? (string) $item['download_url'] : '';
         $backupRequired = ! empty($item['backup_required']);
+        // `active`: opt-in activation post-install (Library "Activate
+        // after install" checkbox). Only honored on the fresh-install
+        // path — for upgrades, we never change activation state
+        // because Plugin_Upgrader::upgrade() preserves whatever was
+        // active before, and second-guessing that is a footgun.
+        $activateAfterInstall = ! empty($item['active']);
         // `smoke_check_home` is opt-in: the dashboard sends true only
         // for sites whose home page is known to return 2xx without
         // basic auth or maintenance walls. False positives there are
@@ -177,7 +183,7 @@ class Installer
         // checker compares activation state before/after, which is
         // meaningless on a brand-new install).
         if ($pluginFile === null) {
-            return $this->runFreshInstall($slug, $downloadUrl);
+            return $this->runFreshInstall($slug, $downloadUrl, $activateAfterInstall);
         }
 
         $beforeVersion = $this->readPluginVersion($pluginFile);
@@ -474,16 +480,18 @@ class Installer
      *      the plugin's main file — that comparison is degenerate
      *      for a plugin we're seeing for the first time.
      *
-     * The new plugin is left INACTIVE. The operator activates it
-     * via WP admin or the dashboard's plugin-row toggle. Auto-activation
+     * The new plugin is left INACTIVE by default. Auto-activation
      * is not the right default — it would activate a plugin the
      * operator has never seen the settings/landing page for, which
      * is how WordPress users get surprised by "this plugin took over
-     * my admin" defaults.
+     * my admin" defaults. The dashboard's Library picker offers an
+     * opt-in "Activate after install" checkbox; when set, the
+     * `active` flag is forwarded here and we activate immediately
+     * after the install lands.
      *
      * @return array<string, mixed>
      */
-    private function runFreshInstall(string $slug, string $downloadUrl): array
+    private function runFreshInstall(string $slug, string $downloadUrl, bool $activateAfterInstall = false): array
     {
         // Resolve the package URL. Premium catalog flow already
         // handed us one; free flow needs a wp.org lookup.
@@ -557,13 +565,48 @@ class Installer
             );
         }
 
-        return [
+        $afterVersion = $this->readPluginVersion($newPluginFile);
+
+        // Optional activation. Failure here doesn't unwind the install
+        // (the file is on disk; a failed activation hook is a fixable
+        // condition, not a reason to delete the plugin). We surface
+        // the activation error inline so the operator sees what
+        // happened, and report `status: installed` with `active:false`
+        // so the dashboard knows the bytes landed even if activation
+        // didn't take.
+        $activated = false;
+        $activationError = null;
+        if ($activateAfterInstall) {
+            if (! function_exists('activate_plugin')) {
+                require_once ABSPATH . 'wp-admin/includes/plugin.php';
+            }
+            $activationResult = activate_plugin($newPluginFile, '', false, false);
+            if (is_wp_error($activationResult)) {
+                $activationError = $this->formatWpError($activationResult);
+            } else {
+                $activated = is_plugin_active($newPluginFile);
+                if (! $activated) {
+                    $activationError = 'Activation hook ran without error but the plugin remained inactive.';
+                }
+            }
+        }
+
+        $row = [
             'slug'            => $slug,
             'status'          => 'installed',
             'version_before'  => '',
-            'version_after'   => $this->readPluginVersion($newPluginFile),
+            'version_after'   => $afterVersion,
             'error'           => null,
         ];
+        // Only carry the activation fields back when the operator
+        // asked for it — keeps the response shape lean for the
+        // common "install only" case.
+        if ($activateAfterInstall) {
+            $row['active'] = $activated;
+            $row['activation_error'] = $activationError;
+        }
+
+        return $row;
     }
 
     /**
