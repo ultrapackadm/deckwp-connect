@@ -4,6 +4,28 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.15.0] — 2026-05-10
+
+Adds `connector_version` to the heartbeat + inventory payloads.
+Lets the dashboard detect sites running outdated connectors and
+surface a "Connector update available" banner on /sites/{id}
+with one-click guidance — closes the "I shipped /plugin-toggle
+in v0.14 but the operator doesn't know they're stuck on v0.13"
+discovery gap.
+
+### Added
+
+- `Heartbeat\Scheduler::buildPayload()` now includes
+  `connector_version` (from the `DECKWP_CONNECT_VERSION` constant).
+- `REST\Routes\InventoryRoute::handle()` mirrors the same field
+  so the on-demand /inventory pull (dashboard's "Refresh now"
+  button) carries the version too.
+- Heartbeat docblock updated to reflect the new field.
+
+No-op for paired sites until the dashboard's next deploy starts
+reading the field. Existing payload consumers ignore unknown
+fields, so this is a pure addition with no backwards-compat risk.
+
 ## [0.14.0] — 2026-05-09
 
 Adds remote activation. The Library install flow can now activate

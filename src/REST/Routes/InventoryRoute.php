@@ -73,13 +73,16 @@ class InventoryRoute
         global $wp_version;
 
         $payload = [
-            'event'        => 'inventory',
-            'sent_at'      => time(),
-            'wp_version'   => isset($wp_version) ? (string) $wp_version : 'unknown',
-            'php_version'  => PHP_VERSION,
-            'site_url'     => function_exists('get_site_url') ? (string) get_site_url() : '',
-            'is_multisite' => function_exists('is_multisite') && is_multisite(),
-            'plugins'      => $this->inventory->collect(),
+            'event'             => 'inventory',
+            'sent_at'           => time(),
+            // Mirror of the heartbeat payload's connector_version
+            // field — same dashboard consumer, same merge logic.
+            'connector_version' => defined('DECKWP_CONNECT_VERSION') ? (string) DECKWP_CONNECT_VERSION : null,
+            'wp_version'        => isset($wp_version) ? (string) $wp_version : 'unknown',
+            'php_version'       => PHP_VERSION,
+            'site_url'          => function_exists('get_site_url') ? (string) get_site_url() : '',
+            'is_multisite'      => function_exists('is_multisite') && is_multisite(),
+            'plugins'           => $this->inventory->collect(),
         ];
 
         return new WP_REST_Response($payload, 200);

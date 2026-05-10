@@ -21,12 +21,13 @@ use DeckWP\Connect\Storage\Settings;
  *     Content-Type: application/json
  *
  *     {
- *       "event":         "heartbeat",
- *       "sent_at":       1714502400,
- *       "wp_version":    "6.6.2",
- *       "php_version":   "8.3.10",
- *       "site_url":      "https://deckwp-test-wp.test",
- *       "is_multisite":  false,
+ *       "event":             "heartbeat",
+ *       "sent_at":           1714502400,
+ *       "connector_version": "0.15.0",
+ *       "wp_version":        "6.6.2",
+ *       "php_version":       "8.3.10",
+ *       "site_url":          "https://deckwp-test-wp.test",
+ *       "is_multisite":      false,
  *       "plugins": [
  *         {"slug":"akismet","name":"Akismet…","version":"5.3.4","active":true,
  *          "update_available":false,"new_version":null,"plugin_file":"akismet/akismet.php"},
@@ -302,14 +303,20 @@ class Scheduler
         global $wp_version;
 
         return [
-            'event'        => 'heartbeat',
-            'sent_at'      => time(),
-            'wp_version'   => isset($wp_version) ? (string) $wp_version : 'unknown',
-            'php_version'  => PHP_VERSION,
-            'site_url'     => (string) get_site_url(),
-            'is_multisite' => function_exists('is_multisite') && is_multisite(),
-            'plugins'      => $this->inventory->collect(),
-            'fatal_log'    => $this->collectFatalLog(),
+            'event'             => 'heartbeat',
+            'sent_at'           => time(),
+            // Connector's own version. Lets the dashboard detect
+            // sites running outdated connectors (some features
+            // require v0.13+ for fresh install, v0.14+ for activate,
+            // etc.) and surface a "Connector update available"
+            // banner with one-click guidance.
+            'connector_version' => defined('DECKWP_CONNECT_VERSION') ? (string) DECKWP_CONNECT_VERSION : null,
+            'wp_version'        => isset($wp_version) ? (string) $wp_version : 'unknown',
+            'php_version'       => PHP_VERSION,
+            'site_url'          => (string) get_site_url(),
+            'is_multisite'      => function_exists('is_multisite') && is_multisite(),
+            'plugins'           => $this->inventory->collect(),
+            'fatal_log'         => $this->collectFatalLog(),
         ];
     }
 
