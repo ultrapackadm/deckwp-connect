@@ -12,6 +12,7 @@ use DeckWP\Connect\REST\Routes\InventoryRoute;
 use DeckWP\Connect\REST\Routes\MaintenanceRoute;
 use DeckWP\Connect\REST\Routes\PluginToggleRoute;
 use DeckWP\Connect\REST\Routes\RestoreBackupRoute;
+use DeckWP\Connect\REST\Routes\ThemeSwitchRoute;
 use DeckWP\Connect\REST\Routes\ScanRoute;
 use DeckWP\Connect\REST\Routes\SetManagedSlugsRoute;
 use DeckWP\Connect\REST\Routes\SsoLoginRoute;
@@ -76,6 +77,10 @@ use DeckWP\Connect\REST\Routes\WhitelabelRoute;
  *     a single plugin. Powers the dashboard's Library "Activate
  *     after install" checkbox + the post-install "Activate now"
  *     button. Idempotent. {@see PluginToggleRoute}.
+ *   - POST /wp-json/deckwp/v1/theme-switch — activate (switch_theme
+ *     to) a single installed theme. Theme equivalent of
+ *     `plugin-toggle` minus the deactivate verb (WP always has
+ *     exactly one active theme). Idempotent. {@see ThemeSwitchRoute}.
  *
  * ## Planned
  *
@@ -128,6 +133,9 @@ class Server
     /** @var PluginToggleRoute */
     private $pluginToggleRoute;
 
+    /** @var ThemeSwitchRoute */
+    private $themeSwitchRoute;
+
     public function __construct(
         HmacVerifier $verifier = null,
         ScanRoute $scanRoute = null,
@@ -140,7 +148,8 @@ class Server
         BackupCreateRoute $backupCreateRoute = null,
         SetManagedSlugsRoute $setManagedSlugsRoute = null,
         WhitelabelRoute $whitelabelRoute = null,
-        PluginToggleRoute $pluginToggleRoute = null
+        PluginToggleRoute $pluginToggleRoute = null,
+        ThemeSwitchRoute $themeSwitchRoute = null
     ) {
         $this->verifier             = $verifier ?? new HmacVerifier();
         $this->scanRoute            = $scanRoute ?? new ScanRoute();
@@ -154,6 +163,7 @@ class Server
         $this->setManagedSlugsRoute = $setManagedSlugsRoute ?? new SetManagedSlugsRoute();
         $this->whitelabelRoute      = $whitelabelRoute ?? new WhitelabelRoute();
         $this->pluginToggleRoute    = $pluginToggleRoute ?? new PluginToggleRoute();
+        $this->themeSwitchRoute     = $themeSwitchRoute ?? new ThemeSwitchRoute();
     }
 
     /**
@@ -241,6 +251,12 @@ class Server
             'deckwp/v1',
             '/plugin-toggle',
             $this->pluginToggleRoute->args($permissionCallback)
+        );
+
+        register_rest_route(
+            'deckwp/v1',
+            '/theme-switch',
+            $this->themeSwitchRoute->args($permissionCallback)
         );
     }
 }

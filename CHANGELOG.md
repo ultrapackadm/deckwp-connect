@@ -4,6 +4,45 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.17.0] — 2026-05-11
+
+Adds the theme equivalent of `/plugin-toggle` — `/theme-switch`.
+Completes the theme parity left over from v0.16 (theme install)
+so the dashboard's Library install-progress modal can render an
+"Activate now" button on succeeded theme rows.
+
+### Added
+
+- `POST /wp-json/deckwp/v1/theme-switch` — accepts `{slug}`.
+  Calls `switch_theme($stylesheet)` to activate the theme as
+  the site's live one. Idempotent (switching to the active
+  theme is a no-op). Re-reads `get_stylesheet()` after the
+  call to detect rare "switch didn't take" cases (multisite
+  network theme handlers, preset-lock plugins) and surfaces
+  the mismatch in the response.
+
+### Why a separate route from /plugin-toggle
+
+Plugin activation is additive (multiple plugins can be active);
+theme activation is destructive (exactly one active theme,
+switching replaces the previous one on the live frontend).
+The verb-level distinction matters enough — operator-facing
+copy in the dashboard differs between "Activate this plugin
+now" and "Switch the live theme to this one" — that conflating
+them in `plugin-toggle` would force every caller to carry a
+`kind` discriminator AND would obscure the destructiveness
+warning the theme path needs.
+
+### Out of scope (deferred)
+
+- Theme deactivation. WordPress has no `deactivate_theme()`
+  primitive — switching away from a theme happens by activating
+  a different one. The dashboard surfaces a "you must pick
+  another theme to switch to" affordance instead.
+- Per-row theme toggle on the site detail page. Lands with
+  the Task 1.2 (Site detail light) work in
+  `_planning/FRONTEND_ROADMAP.md`.
+
 ## [0.16.0] — 2026-05-10
 
 Adds theme install + upgrade to `/install-batch`. Until now the
