@@ -6,6 +6,7 @@ defined('ABSPATH') || exit;
 
 use DeckWP\Connect\REST\Auth\HmacVerifier;
 use DeckWP\Connect\REST\Routes\BackupCreateRoute;
+use DeckWP\Connect\REST\Routes\BootstrapPairingRoute;
 use DeckWP\Connect\REST\Routes\DeleteBackupRoute;
 use DeckWP\Connect\REST\Routes\InstallBatchRoute;
 use DeckWP\Connect\REST\Routes\InventoryRoute;
@@ -81,6 +82,12 @@ use DeckWP\Connect\REST\Routes\WhitelabelRoute;
  *     to) a single installed theme. Theme equivalent of
  *     `plugin-toggle` minus the deactivate verb (WP always has
  *     exactly one active theme). Idempotent. {@see ThemeSwitchRoute}.
+ *   - POST /wp-json/deckwp/v1/bootstrap-pairing — used by the
+ *     dashboard's Automatic Pairing flow to push a pairing token
+ *     INTO the connector. NOT HMAC-protected (no secret yet by
+ *     definition); falls back to WP cookie + nonce + manage_options
+ *     auth. Delegates to {@see PairingHandler::pair()} for the
+ *     synchronous handshake. {@see BootstrapPairingRoute}.
  *
  * ## Planned
  *
@@ -136,6 +143,9 @@ class Server
     /** @var ThemeSwitchRoute */
     private $themeSwitchRoute;
 
+    /** @var BootstrapPairingRoute */
+    private $bootstrapPairingRoute;
+
     public function __construct(
         HmacVerifier $verifier = null,
         ScanRoute $scanRoute = null,
@@ -149,7 +159,8 @@ class Server
         SetManagedSlugsRoute $setManagedSlugsRoute = null,
         WhitelabelRoute $whitelabelRoute = null,
         PluginToggleRoute $pluginToggleRoute = null,
-        ThemeSwitchRoute $themeSwitchRoute = null
+        ThemeSwitchRoute $themeSwitchRoute = null,
+        BootstrapPairingRoute $bootstrapPairingRoute = null
     ) {
         $this->verifier             = $verifier ?? new HmacVerifier();
         $this->scanRoute            = $scanRoute ?? new ScanRoute();
@@ -164,6 +175,7 @@ class Server
         $this->whitelabelRoute      = $whitelabelRoute ?? new WhitelabelRoute();
         $this->pluginToggleRoute    = $pluginToggleRoute ?? new PluginToggleRoute();
         $this->themeSwitchRoute     = $themeSwitchRoute ?? new ThemeSwitchRoute();
+        $this->bootstrapPairingRoute = $bootstrapPairingRoute ?? new BootstrapPairingRoute();
     }
 
     /**
@@ -257,6 +269,18 @@ class Server
             'deckwp/v1',
             '/theme-switch',
             $this->themeSwitchRoute->args($permissionCallback)
+        );
+
+        // NOTE: bootstrap-pairing does NOT use $permissionCallback
+        // (the HMAC verifier) — by definition we don't have a secret
+        // yet at bootstrap time. The route's own args() supplies a
+        // `current_user_can('manage_options')` callback instead.
+        // Passing the HMAC verifier here is purely structural; the
+        // route ignores it.
+        register_rest_route(
+            'deckwp/v1',
+            '/bootstrap-pairing',
+            $this->bootstrapPairingRoute->args($permissionCallback)
         );
     }
 }

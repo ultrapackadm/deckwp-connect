@@ -4,6 +4,37 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.18.0] — 2026-05-12
+
+Adds `/bootstrap-pairing` — the inbound REST route the DeckWP
+dashboard's new Automatic Pairing flow uses to push a pairing
+token into the connector. Pairs with deckwp-app's Day 4 of the
+AUTOMATIC_PAIRING sprint.
+
+### Added
+
+- `POST /wp-json/deckwp/v1/bootstrap-pairing` — accepts
+  `{pairing_token, platform_url}`, delegates to the existing
+  `Pairing\Handler::pair()` for the handshake. Returns the same
+  `{ok, message, site_id}` envelope shape the Manual pairing
+  path produces.
+
+### Why this route is NOT HMAC-protected
+
+The Automatic Pairing flow runs BEFORE the connector has an
+HMAC secret — the whole point of the call is to obtain one.
+Auth falls back to standard WP cookie + nonce + the
+`manage_options` capability. The dashboard establishes that
+session by logging in via the operator's WP admin credentials
+in the steps preceding this call (login → verify admin →
+install plugin → activate plugin → bootstrap-pairing).
+
+### Pairs with
+
+- DeckWP `b55a6a5` (Day 1), `63055f2` (Day 2), `5adcae5` (Day 3),
+  and the upcoming Day 4 commit which wires `RemoteWpClient::pair()`
+  end-to-end through this route.
+
 ## [0.17.0] — 2026-05-11
 
 Adds the theme equivalent of `/plugin-toggle` — `/theme-switch`.
