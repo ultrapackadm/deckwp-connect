@@ -4,6 +4,43 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.20.0] — 2026-05-17
+
+Theme inventory ships in the heartbeat payload. The dashboard now has
+the data it needs to render a per-site Themes inventory (matching the
+existing Plugins inventory), detect outdated themes, and surface
+update / activate / install actions for themes.
+
+### Added
+
+- `Inventory\ThemeInventory` — collects the local theme inventory
+  via `wp_get_themes()`, emits one row per theme with slug, name,
+  version, active flag (compared against `get_stylesheet()`), parent
+  slug for child themes (from the `Template:` header), and update
+  metadata read from the `update_themes` site transient.
+- `Heartbeat\Scheduler::buildPayload()` now includes a `themes[]`
+  key alongside the existing `plugins[]`. Same upsert contract on
+  the dashboard side (HeartbeatProcessor::syncThemes).
+- Standalone-theme self-reference defense: when WP reports
+  `Template: <self>` for a theme that isn't actually a child (older
+  WP convention for parent themes), the connector strips that to
+  null so the dashboard doesn't store a self-referencing parent.
+
+### Wire contract change
+
+The heartbeat payload shape is purely additive. Pre-v0.20
+connectors omit `themes` entirely; pre-v0.20 dashboards ignore the
+new key. New dashboards (deckwp-app Themes sprint) distinguish
+"themes key absent" (pre-v0.20 connector, no info to apply) from
+"themes key present and empty" (impossible on a real WP install,
+but valid payload shape) so a pre-v0.20 connector heartbeat never
+prunes an existing theme inventory.
+
+### Changed
+
+- Heartbeat success log line now includes `themes=N` alongside the
+  existing `plugins=N` count for parity in operator diagnostics.
+
 ## [0.19.0] — 2026-05-13
 
 Reports plugin dependencies after every install so the dashboard

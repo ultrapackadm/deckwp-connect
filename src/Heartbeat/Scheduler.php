@@ -7,6 +7,7 @@ defined('ABSPATH') || exit;
 use DeckWP\Connect\HMAC\Signer;
 use DeckWP\Connect\HTTP\ApiClient;
 use DeckWP\Connect\Inventory\PluginInventory;
+use DeckWP\Connect\Inventory\ThemeInventory;
 use DeckWP\Connect\Storage\Settings;
 
 /**
@@ -31,6 +32,13 @@ use DeckWP\Connect\Storage\Settings;
  *       "plugins": [
  *         {"slug":"akismet","name":"Akismet…","version":"5.3.4","active":true,
  *          "update_available":false,"new_version":null,"plugin_file":"akismet/akismet.php"},
+ *         …
+ *       ],
+ *       "themes": [
+ *         {"slug":"twentytwentyfour","name":"Twenty Twenty-Four","version":"1.2",
+ *          "active":false,"parent":null,"update_available":false,"new_version":null},
+ *         {"slug":"avada-child","name":"Avada Child","version":"1.0","active":true,
+ *          "parent":"Avada","update_available":false,"new_version":null},
  *         …
  *       ],
  *       "fatal_log": [
@@ -92,16 +100,21 @@ class Scheduler
     /** @var PluginInventory */
     private $inventory;
 
+    /** @var ThemeInventory */
+    private $themeInventory;
+
     public function __construct(
         Settings $settings = null,
         Signer $signer = null,
         ApiClient $http = null,
-        PluginInventory $inventory = null
+        PluginInventory $inventory = null,
+        ThemeInventory $themeInventory = null
     ) {
-        $this->settings  = $settings ?? new Settings();
-        $this->signer    = $signer ?? new Signer();
-        $this->http      = $http ?? new ApiClient();
-        $this->inventory = $inventory ?? new PluginInventory();
+        $this->settings       = $settings ?? new Settings();
+        $this->signer         = $signer ?? new Signer();
+        $this->http           = $http ?? new ApiClient();
+        $this->inventory      = $inventory ?? new PluginInventory();
+        $this->themeInventory = $themeInventory ?? new ThemeInventory();
     }
 
     /**
@@ -259,7 +272,11 @@ class Scheduler
         }
 
         if ($result['ok']) {
-            $this->logSuccess($result, count((array) ($payload['plugins'] ?? [])));
+            $this->logSuccess(
+                $result,
+                count((array) ($payload['plugins'] ?? [])),
+                count((array) ($payload['themes'] ?? []))
+            );
         } else {
             $this->logFailure($result);
         }
@@ -316,6 +333,15 @@ class Scheduler
             'site_url'          => (string) get_site_url(),
             'is_multisite'      => function_exists('is_multisite') && is_multisite(),
             'plugins'           => $this->inventory->collect(),
+            // Themes ship alongside plugins from v0.16+. Same upsert
+            // contract on the dashboard side (HeartbeatProcessor::
+            // syncThemes), keyed on stylesheet directory name (the
+            // slug). Pre-v0.16 connectors omit this key entirely — the
+            // dashboard treats a missing `themes` field as "no theme
+            // info this tick", NOT "site has zero themes", so it
+            // won't prune existing theme installations during the
+            // rollout window.
+            'themes'            => $this->themeInventory->collect(),
             'fatal_log'         => $this->collectFatalLog(),
         ];
     }
@@ -383,16 +409,17 @@ class Scheduler
     /**
      * @param array{ok: bool, status: int, body: array|null, raw: string, error: string|null} $result
      */
-    private function logSuccess(array $result, int $pluginCount): void
+    private function logSuccess(array $result, int $pluginCount, int $themeCount): void
     {
         if (! function_exists('error_log')) {
             return;
         }
 
         error_log(sprintf(
-            '[deckwp-connect] heartbeat ok (status=%d, plugins=%d)',
+            '[deckwp-connect] heartbeat ok (status=%d, plugins=%d, themes=%d)',
             (int) $result['status'],
-            $pluginCount
+            $pluginCount,
+            $themeCount
         ));
     }
 }
