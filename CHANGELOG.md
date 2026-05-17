@@ -4,6 +4,38 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.19.0] — 2026-05-13
+
+Reports plugin dependencies after every install so the dashboard
+can auto-install missing wp.org dependencies. Closes the loop on
+the "Pro plugin requires free plugin from wp.org" UX trap (e.g.
+Analytify Pro requires Analytify free) — operator clicks Install
+once, dashboard installs the dep + retries activation.
+
+### Added
+
+- `Installer::readPluginRequiresPlugins()` — reads the `Requires
+  Plugins:` header from a plugin file via `get_file_data()`.
+  Works on WP 4.9+ even though the header is officially WP 6.5+
+  (the underlying file scan is version-agnostic).
+- `Installer::filterMissingDependencies()` — filters a required-
+  plugins list down to slugs that aren't installed + active on
+  this site. Match logic walks `get_plugins()` keys against the
+  required slug as a folder name; supports single-file plugins.
+- `install-batch` response now carries two new keys per item:
+  - `requires_plugins` — raw list from the header (informational)
+  - `missing_dependencies` — slugs that need installation/activation
+  Empty arrays still emit so the dashboard can branch on key
+  presence vs fall back to old-connector behavior.
+
+### Wire contract change
+
+The `install-batch` response shape is purely additive. Old
+dashboards that don't read the new keys continue working
+unchanged; new dashboards (deckwp-app Plugin Dependencies sprint)
+detect `missing_dependencies` presence and auto-dispatch follow-up
+installs for the wp.org slugs listed there.
+
 ## [0.18.0] — 2026-05-12
 
 Adds `/bootstrap-pairing` — the inbound REST route the DeckWP

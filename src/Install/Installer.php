@@ -284,12 +284,27 @@ class Installer
             );
         }
 
+        // Dependency detection (Day 7 / Plugin Dependencies sprint).
+        // Read `Requires Plugins:` header from the just-upgraded
+        // plugin and filter down to the slugs that aren't installed
+        // + active locally. The dashboard uses missing_dependencies
+        // to auto-install wp.org dependencies after a premium upgrade
+        // whose activation would otherwise be blocked by WP core.
+        //
+        // Empty arrays are still emitted so the dashboard can branch
+        // on key presence rather than fall back to "old connector"
+        // detection logic.
+        $requiresPlugins = $this->readPluginRequiresPlugins($pluginFile);
+        $missingDeps = $this->filterMissingDependencies($requiresPlugins);
+
         return $this->withBackup([
             'slug' => $slug,
             'status' => 'installed',
             'version_before' => $beforeVersion,
             'version_after' => $afterVersion,
             'error' => null,
+            'requires_plugins' => $requiresPlugins,
+            'missing_dependencies' => $missingDeps,
         ], $backupResult);
     }
 
@@ -456,6 +471,115 @@ class Installer
     }
 
     /**
+     * Read the `Requires Plugins:` header from a plugin file.
+     *
+     * WP 6.5+ ships native support for this header — comma-separated
+     * list of slugs (e.g. `analytify, woocommerce`) that the plugin
+     * needs in order to activate. WP core blocks activation when any
+     * required plugin is missing or inactive ("This plugin cannot be
+     * activated because required plugins are missing or inactive.").
+     *
+     * We use `get_file_data()` directly rather than `get_plugin_data()`
+     * so this works on WP < 6.5 too — `get_plugin_data()` returns the
+     * `RequiresPlugins` key only on 6.5+, but the underlying header
+     * file scan works on any version.
+     *
+     * @return array<int, string> Sanitized slug list, lowercased + trimmed,
+     *         duplicates removed. Empty array when the header is missing
+     *         or empty.
+     */
+    private function readPluginRequiresPlugins(string $pluginFile): array
+    {
+        $path = WP_PLUGIN_DIR . '/' . $pluginFile;
+        if (! is_readable($path) || ! function_exists('get_file_data')) {
+            return [];
+        }
+
+        $data = get_file_data($path, ['RequiresPlugins' => 'Requires Plugins']);
+        $raw = isset($data['RequiresPlugins']) ? (string) $data['RequiresPlugins'] : '';
+        if ($raw === '') {
+            return [];
+        }
+
+        // Header format: comma-separated slugs, e.g. "analytify, woocommerce"
+        $slugs = array_filter(array_map(
+            static function ($s) {
+                $s = strtolower(trim((string) $s));
+                // Defensive: strip anything that isn't a wp.org-style slug
+                // shape. WP itself enforces the same — the header is
+                // intended for wp.org slugs only.
+                return preg_match('/^[a-z0-9\-]+$/', $s) === 1 ? $s : '';
+            },
+            explode(',', $raw)
+        ));
+
+        return array_values(array_unique($slugs));
+    }
+
+    /**
+     * Filter a list of required-plugin slugs down to the ones that
+     * are NOT currently installed AND active on this site.
+     *
+     * The dashboard uses the output to decide what to auto-install
+     * as dependencies after a premium-plugin install whose
+     * activation was blocked by missing requires.
+     *
+     * Match logic:
+     *   - A required slug `X` is "satisfied" when ANY active plugin
+     *     in `active_plugins` is at path `X/X.php` OR the plugin
+     *     folder is `X/` and contains at least one active *.php
+     *     entrypoint. Matching against the folder name is what WP
+     *     core itself uses on the same check.
+     *
+     * @param  array<int, string>  $requiredSlugs  Output of {@see readPluginRequiresPlugins()}
+     * @return array<int, string>  Slugs that need installation/activation.
+     */
+    private function filterMissingDependencies(array $requiredSlugs): array
+    {
+        if ($requiredSlugs === []) {
+            return [];
+        }
+
+        if (! function_exists('get_plugins') || ! function_exists('is_plugin_active')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        if (! function_exists('get_plugins') || ! function_exists('is_plugin_active')) {
+            // Both should always exist on a real WP install — but if
+            // somehow the admin helpers can't be loaded, conservatively
+            // declare all required plugins as missing so the dashboard
+            // attempts to install them. Worse case: a redundant
+            // install attempt; the connector will report "already
+            // installed" idempotently.
+            return $requiredSlugs;
+        }
+
+        $allPlugins = get_plugins(); // [plugin-file => header data]
+        $missing = [];
+
+        foreach ($requiredSlugs as $slug) {
+            $found = false;
+            foreach (array_keys($allPlugins) as $pluginFile) {
+                // Plugin folder name is the segment before the first `/`.
+                // For single-file plugins (e.g. `hello.php`) the slug is
+                // the basename without extension.
+                $folder = strpos($pluginFile, '/') !== false
+                    ? substr($pluginFile, 0, strpos($pluginFile, '/'))
+                    : basename($pluginFile, '.php');
+
+                if (strtolower($folder) === $slug && is_plugin_active($pluginFile)) {
+                    $found = true;
+                    break;
+                }
+            }
+            if (! $found) {
+                $missing[] = $slug;
+            }
+        }
+
+        return $missing;
+    }
+
+    /**
      * Wraps the actual {@see \Plugin_Upgrader::upgrade()} call so
      * other methods stay focused on shape conversion. Lives in its
      * own method partly for testability — a future test fake can
@@ -600,12 +724,27 @@ class Installer
             }
         }
 
+        // Dependency detection (Plugin Dependencies sprint). Read
+        // the `Requires Plugins:` header from the freshly-installed
+        // plugin's main file. When the operator asked for activation
+        // and activation_error indicates the plugin's deps were
+        // missing (common case: WP core's "required plugins are
+        // missing or inactive" message), the dashboard can auto-
+        // install those wp.org deps and re-attempt activation.
+        //
+        // Empty arrays still emit so the dashboard can branch on
+        // key presence vs fall back to old-connector behavior.
+        $requiresPlugins = $this->readPluginRequiresPlugins($newPluginFile);
+        $missingDeps = $this->filterMissingDependencies($requiresPlugins);
+
         $row = [
             'slug'            => $slug,
             'status'          => 'installed',
             'version_before'  => '',
             'version_after'   => $afterVersion,
             'error'           => null,
+            'requires_plugins' => $requiresPlugins,
+            'missing_dependencies' => $missingDeps,
         ];
         // Only carry the activation fields back when the operator
         // asked for it — keeps the response shape lean for the
