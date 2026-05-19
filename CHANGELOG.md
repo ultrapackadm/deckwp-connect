@@ -4,6 +4,55 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.24.1] — 2026-05-19
+
+### Fixed
+
+- Activating the connector while a second copy of the same
+  plugin already exists in `wp-content/plugins/` (typical case:
+  operator uploads a fresh ZIP from a GitHub source archive —
+  unpacks to `deckwp-connect-main/` — without first deleting the
+  existing `deckwp-connect/` folder) no longer hits a fatal
+  `Cannot redeclare function deckwp_connect_on_activate()`.
+
+  Two layers of defense:
+
+  1. A duplicate-load guard at the top of `deckwp-connect.php`
+     short-circuits the second copy's file load when
+     `DECKWP_CONNECT_VERSION` is already defined. The first
+     copy's constants + functions stay authoritative, the
+     second copy is a silent no-op, and WordPress can list
+     both folders as "active" without either side throwing.
+  2. Each top-level `function ... ()` declaration is wrapped
+     in `if (! function_exists(...))` as a fallback so any
+     codepath that bypasses the early return (third-party
+     plugin doing weird `require` tricks, future refactor
+     adding declarations elsewhere) still won't fatal.
+
+  Bailing early instead of just `function_exists`-guarding is
+  intentional: `define()` collisions throw `E_NOTICE` but
+  silently keep the FIRST value. Without the early return, the
+  second copy's `__FILE__` / `plugin_basename(__FILE__)` would
+  populate `DECKWP_CONNECT_FILE` / `DECKWP_CONNECT_BASENAME` —
+  EXCEPT the first copy already won, so the autoloader keeps
+  looking in the FIRST copy's `src/` directory. That's the
+  desired behavior but easier to reason about when the second
+  copy's file load is entirely skipped.
+
+### Workaround for affected installs
+
+Until the v0.24.1 file lands, the operator can manually:
+
+- Delete the duplicate folder via FTP (whichever was uploaded
+  most recently), OR
+- Rename the new folder over the old one (delete the old
+  `deckwp-connect/`, rename `deckwp-connect-main/` →
+  `deckwp-connect/`, then activate)
+
+The duplicate-load guard prevents this from recurring on
+v0.24.1+ regardless of how the operator uploads future
+releases.
+
 ## [0.24.0] — 2026-05-19
 
 Whitelabel reach extended to the connector's own Settings page.
