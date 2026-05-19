@@ -4,6 +4,81 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.23.0] — 2026-05-19
+
+Whitelabel toggles: final wave. The two remaining reserved
+image-URL toggles ship working WP-side handlers, completing the
+5-toggle agency rebrand surface DeckWP committed to at the
+v0.21.0 foundation. All five toggles + the per-plugin `hide`
+flag are now backed.
+
+### Added
+
+- `Branding::maybePrintCustomLoginCss` + `filterLoginHeaderUrl`
+  + `filterLoginHeaderText` wire the `custom_login` toggle.
+  Three coordinated overrides on `wp-login.php`:
+
+  1. The logo image (`.login h1 a` background-image) is
+     replaced with `custom_login_logo_url`. 84×84 box,
+     `background-size: contain` so non-square images
+     letterbox cleanly.
+  2. The accent color (`custom_login_color`, validated as
+     CSS hex via `sanitizeHexColor`) tints the primary
+     button, focus rings on form inputs, and link hover
+     states. Invalid hex strings are silently dropped at
+     render time — the storage layer accepts any string.
+  3. The logo's anchor URL + title attr are retargeted via
+     the `login_headerurl` / `login_headertext` filters.
+     Fallback chain: configured connector `author_uri` →
+     `home_url('/')`; never `https://wordpress.org/`. Link
+     text falls back: configured connector plugin `name` →
+     site title; never "Powered by WordPress".
+
+  Toggle ON with both URL + color empty still applies the
+  URL/text retargets — partial overrides are valid.
+
+- `Branding::maybeReplaceAdminBarLogo` +
+  `maybePrintAdminBarLogoCss` wire the `adminbar_logo`
+  toggle. Removes the entire `wp-logo` adminbar node
+  (including its About WordPress / Documentation / Support /
+  Feedback sub-menu) so the customer's adminbar doesn't leak
+  WP identity. When `adminbar_logo_url` is set, drops in a
+  replacement `deckwp-whitelabel-logo` node in the same
+  `top-secondary` group, styled via CSS background-image at
+  20×20 (matches the wp-logo icon container so the adminbar
+  height doesn't shift).
+
+  CSS is emitted across `wp_before_admin_bar_render`,
+  `admin_head`, and `wp_head` because the adminbar renders
+  in three contexts (wp-admin, front-end logged-in,
+  customizer); each has different head-action timing.
+  Idempotent via the unique `style#deckwp-adminbar-logo` id.
+
+- Three new private helpers:
+  - `sanitizeHexColor()` — validates CSS hex strings
+    (`#RGB`, `#RGBA`, `#RRGGBB`, `#RRGGBBAA`). Strict at
+    render time, lenient at storage.
+  - `resolveConnectorAuthorUri()` — reads the connector's
+    own `author_uri` per-plugin override, if set, for the
+    login URL fallback chain.
+  - `resolveConnectorPluginName()` — same, for the rebrand
+    name used in login hover text + adminbar screen-reader
+    label.
+
+### Wire contract change
+
+None. `WhitelabelRoute` already accepted these keys in
+v0.21.0; this release wires their WP-side behavior. Pre-v0.23
+connectors silently ignore the toggles' effects (storage was
+already happening).
+
+### Whitelabel feature: complete
+
+With v0.23.0 the whitelabel surface is feature-complete for
+v1. Future iterations land as enhancements (e.g. theme
+rebrand, per-plugin URL overrides on `plugin_uri`), not as
+"toggle X is still pending".
+
 ## [0.22.0] — 2026-05-19
 
 Whitelabel toggles: second wave. Two more of the four reserved

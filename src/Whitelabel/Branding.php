@@ -56,9 +56,21 @@ defined('ABSPATH') || exit;
  *     append a single "Support" anchor pointing at it. Version +
  *     "By Author" text items are preserved (no URL leak).
  *
- * Other toggles (`custom_login`, `adminbar_logo`) are reserved in
- * the config shape but not yet wired — each comes in its own
- * follow-up commit.
+ *   - `custom_login` (v0.23.0) — replace the wp-login.php logo
+ *     image + accent color via inline CSS on the
+ *     `login_enqueue_scripts` action. Also retargets the logo's
+ *     anchor URL + title attribute so the hover/click no longer
+ *     advertises WordPress. Color falls back gracefully when no
+ *     valid hex is provided; logo URL falls back to the default
+ *     WP logo when empty (only the URL retarget applies, keeping
+ *     this fully opt-in granular).
+ *
+ *   - `adminbar_logo` (v0.23.0) — unhook the entire `wp-logo`
+ *     adminbar node (including its About / Documentation /
+ *     Support sub-menu) so customer-facing adminbars don't leak
+ *     WP identity. If `adminbar_logo_url` is set, drop in a
+ *     replacement node `deckwp-whitelabel-logo` with the custom
+ *     image as its icon (rendered via CSS background-image).
  *
  * ## What this class does NOT do
  *
@@ -118,6 +130,28 @@ class Branding
         // notice). The handler self-gates on the toggle so the
         // CSS is silent when the operator hasn't opted in.
         add_action('admin_print_styles-plugins.php', [$this, 'maybePrintSuppressActivateCss'], 100);
+
+        // `custom_login` — three hooks coordinate the rebrand on the
+        // wp-login.php screen:
+        //   - login_enqueue_scripts: prints the inline CSS overriding
+        //     the WP logo image + accent color
+        //   - login_headerurl: changes where the logo link points
+        //   - login_headertext: changes the link's title attr (hover
+        //     text), avoiding "Powered by WordPress" leak
+        add_action('login_enqueue_scripts', [$this, 'maybePrintCustomLoginCss'], 100);
+        add_filter('login_headerurl',       [$this, 'filterLoginHeaderUrl'],  100);
+        add_filter('login_headertext',      [$this, 'filterLoginHeaderText'], 100);
+
+        // `adminbar_logo` — runs at priority 11 to fire AFTER WP's
+        // own `wp_admin_bar_wp_menu` (priority 10) which adds the
+        // wp-logo node. We unhook the entire `wp-logo` tree (it
+        // carries About / Documentation / Support sub-menu items
+        // that leak WP identity) and, if a custom URL is set, drop
+        // in a replacement node styled via CSS in the action below.
+        add_action('admin_bar_menu',          [$this, 'maybeReplaceAdminBarLogo'], 11);
+        add_action('wp_before_admin_bar_render', [$this, 'maybePrintAdminBarLogoCss'], 100);
+        add_action('admin_head',                 [$this, 'maybePrintAdminBarLogoCss'], 100);
+        add_action('wp_head',                    [$this, 'maybePrintAdminBarLogoCss'], 100);
     }
 
     /**
@@ -299,6 +333,228 @@ class Branding
     }
 
     /**
+     * `custom_login` (v0.23.0) — emit inline CSS on wp-login.php to
+     * replace the WP logo image + accent color. Runs on
+     * `login_enqueue_scripts` so the styles inject INSIDE the login
+     * page's `<head>`, after WP's own login styles, so our overrides
+     * win without `!important` spam.
+     *
+     * Two independent override knobs:
+     *
+     *   - `custom_login_logo_url` — replaces `.login h1 a` background
+     *     image. We hard-code dimensions (84x84) matching WP's
+     *     default logo block so the layout doesn't shift. Custom
+     *     logos at other aspect ratios may overflow; the box is
+     *     `background-size: contain` so non-square images letterbox.
+     *
+     *   - `custom_login_color` — applies a tint to the primary
+     *     button + the focus accent on the login form input
+     *     borders. Validated as a CSS hex color (3 / 4 / 6 / 8 hex
+     *     digits) at render time — non-hex values are skipped
+     *     entirely rather than emitted as garbage that could break
+     *     the page.
+     *
+     * Self-gates on the toggle being ON. When ON but both URL +
+     * color empty, the method early-returns (no CSS to emit) — the
+     * toggle alone, without any value, is a no-op. The
+     * `login_headerurl` / `login_headertext` filters below ARE
+     * applied even with empty URL + color, because their fallback
+     * (the configured author URL / plugin name) doesn't require
+     * any custom-login-specific config beyond the master toggle.
+     */
+    public function maybePrintCustomLoginCss(): void
+    {
+        if (! $this->isToggleOn('custom_login')) {
+            return;
+        }
+
+        $logoUrl = $this->getToggleString('custom_login_logo_url');
+        $color   = $this->sanitizeHexColor($this->getToggleString('custom_login_color'));
+
+        if ($logoUrl === '' && $color === '') {
+            // Toggle on but no overrides configured. The
+            // login_headerurl / login_headertext filters still run
+            // (cheap; their fallback covers the empty case) but we
+            // skip the CSS block to keep wp-login.php's source
+            // clean for QA.
+            return;
+        }
+
+        $css = '';
+
+        if ($logoUrl !== '') {
+            $css .= sprintf(
+                '.login h1 a{background-image:url(\'%s\');background-size:contain;'
+                . 'background-position:center center;background-repeat:no-repeat;'
+                . 'width:84px;height:84px;}',
+                esc_url($logoUrl)
+            );
+        }
+
+        if ($color !== '') {
+            // Accent the primary button + focus rings on the login
+            // form. Border + box-shadow combo so the focus state
+            // remains visible against light + dark themes.
+            $css .= sprintf(
+                '.wp-core-ui .button-primary{background:%1$s;border-color:%1$s;'
+                . '-webkit-box-shadow:0 1px 0 %1$s;box-shadow:0 1px 0 %1$s;}'
+                . '.wp-core-ui .button-primary:hover,'
+                . '.wp-core-ui .button-primary:focus{background:%1$s;border-color:%1$s;'
+                . 'filter:brightness(0.92);}'
+                . '#loginform input[type="text"]:focus,'
+                . '#loginform input[type="password"]:focus{border-color:%1$s;'
+                . '-webkit-box-shadow:0 0 0 1px %1$s;box-shadow:0 0 0 1px %1$s;}'
+                . '.login #backtoblog a:hover,'
+                . '.login #nav a:hover{color:%1$s;}',
+                $color
+            );
+        }
+
+        echo '<style id="deckwp-custom-login">' . $css . '</style>';
+    }
+
+    /**
+     * `custom_login` — retarget the login logo's anchor away from
+     * wordpress.org. Falls back to the configured `author_uri`
+     * from the per-plugin overrides (if the operator set one for
+     * the connector), then to `home_url('/')` (the customer's own
+     * site root) — never `https://wordpress.org/` which is WP's
+     * default and the whole point of the toggle.
+     *
+     * Pass-through when toggle is off — we don't touch core's
+     * default unless the operator opted in.
+     *
+     * @param  string $url WP's default value (https://wordpress.org/)
+     * @return string
+     */
+    public function filterLoginHeaderUrl($url)
+    {
+        if (! $this->isToggleOn('custom_login')) {
+            return $url;
+        }
+        $authorUri = $this->resolveConnectorAuthorUri();
+        if ($authorUri !== '') {
+            return $authorUri;
+        }
+        return function_exists('home_url') ? home_url('/') : $url;
+    }
+
+    /**
+     * `custom_login` — replace the login logo's `title` attribute
+     * (also used as the link's accessible text) so hover/screen
+     * readers don't announce "Powered by WordPress". Falls back
+     * to the configured connector plugin Name override (if set)
+     * then to the WP site title — never the WP default.
+     *
+     * @param  string $text WP's default value (typically the site title or "Powered by WordPress")
+     * @return string
+     */
+    public function filterLoginHeaderText($text)
+    {
+        if (! $this->isToggleOn('custom_login')) {
+            return $text;
+        }
+        $name = $this->resolveConnectorPluginName();
+        if ($name !== '') {
+            return $name;
+        }
+        return function_exists('get_bloginfo') ? (string) get_bloginfo('name') : $text;
+    }
+
+    /**
+     * `adminbar_logo` — unhook the entire `wp-logo` node (including
+     * its sub-menu items: About WordPress, WordPress.org,
+     * Documentation, Support, Feedback) so the customer's adminbar
+     * doesn't leak WP identity. When `adminbar_logo_url` is set,
+     * insert a replacement node `deckwp-whitelabel-logo` in the
+     * same `top-secondary` group; its CSS styling happens in
+     * {@see self::maybePrintAdminBarLogoCss()}.
+     *
+     * Runs on `admin_bar_menu` priority 11 — WP adds the wp-logo
+     * node at priority 10 via `wp_admin_bar_wp_menu()`, so we
+     * have to run after it. Lower priority numbers wouldn't see
+     * the node to remove.
+     *
+     * @param  \WP_Admin_Bar $bar
+     */
+    public function maybeReplaceAdminBarLogo($bar): void
+    {
+        if (! $this->isToggleOn('adminbar_logo')) {
+            return;
+        }
+        if (! is_object($bar) || ! method_exists($bar, 'remove_node')) {
+            return;
+        }
+
+        // Strip the WordPress logo + everything WP hangs off it.
+        // The remove_node call cascades to children because WP
+        // stores them keyed by parent.
+        $bar->remove_node('wp-logo');
+
+        $logoUrl = $this->getToggleString('adminbar_logo_url');
+        if ($logoUrl === '') {
+            // Toggle on but no custom logo URL — leave the slot
+            // empty. The adminbar shows nothing where WordPress
+            // used to be; the operator may prefer this over a
+            // generic placeholder.
+            return;
+        }
+
+        $homeUrl = function_exists('home_url') ? home_url('/') : '#';
+
+        $bar->add_node([
+            'id'    => 'deckwp-whitelabel-logo',
+            'title' => '<span class="ab-icon" aria-hidden="true"></span>'
+                . '<span class="screen-reader-text">'
+                . esc_html($this->resolveConnectorPluginName() ?: 'Site logo')
+                . '</span>',
+            'href'  => $homeUrl,
+            'meta'  => [
+                'title' => $this->resolveConnectorPluginName() ?: '',
+            ],
+        ]);
+    }
+
+    /**
+     * `adminbar_logo` — print the CSS that paints the custom logo
+     * node's `<span class="ab-icon">` with the operator's image.
+     * Emitted across three head contexts (`wp_before_admin_bar_render`,
+     * `admin_head`, `wp_head`) because the adminbar renders both in
+     * wp-admin AND on the front-end when the user is logged in;
+     * each context's head has different action timing.
+     *
+     * The triple registration is idempotent — the `style#` id below
+     * is unique and a duplicate in the same DOM is a no-op
+     * (browsers tolerate it). We accept the slight bloat in trade
+     * for guaranteed coverage of every context the adminbar
+     * actually appears in.
+     */
+    public function maybePrintAdminBarLogoCss(): void
+    {
+        if (! $this->isToggleOn('adminbar_logo')) {
+            return;
+        }
+        $logoUrl = $this->getToggleString('adminbar_logo_url');
+        if ($logoUrl === '') {
+            return;
+        }
+
+        // 20x20 matches the WP logo's icon container exactly so the
+        // adminbar row height doesn't shift. Custom logos at other
+        // aspect ratios are scaled with `background-size: contain`
+        // so they letterbox cleanly inside the icon slot.
+        $css = sprintf(
+            '#wpadminbar #wp-admin-bar-deckwp-whitelabel-logo .ab-icon{'
+            . 'background:url(\'%s\') center center / contain no-repeat;'
+            . 'width:20px;height:20px;display:inline-block;}'
+            . '#wpadminbar #wp-admin-bar-deckwp-whitelabel-logo .ab-icon::before{content:none;}',
+            esc_url($logoUrl)
+        );
+
+        echo '<style id="deckwp-adminbar-logo">' . $css . '</style>';
+    }
+
+    /**
      * Strip the connector's own row from the `update_plugins` site
      * transient when the operator has flipped `hide_updates` ON in
      * the dashboard. The customer's wp-admin won't render an
@@ -351,6 +607,79 @@ class Branding
             return [];
         }
         return $config['plugins'];
+    }
+
+    /**
+     * Resolve the connector's own `author_uri` from the per-plugin
+     * overrides if the operator configured one. Used by the
+     * `custom_login` toggle to retarget the login logo link away
+     * from wordpress.org.
+     *
+     * Returns the empty string when no override is configured, so
+     * the caller can fall through to its next fallback (typically
+     * `home_url('/')`).
+     */
+    private function resolveConnectorAuthorUri(): string
+    {
+        $overrides = $this->getPluginOverrides();
+        $ownPath = defined('DECKWP_CONNECT_BASENAME') ? DECKWP_CONNECT_BASENAME : '';
+        if ($ownPath === '' || ! isset($overrides[$ownPath]) || ! is_array($overrides[$ownPath])) {
+            return '';
+        }
+        $uri = $overrides[$ownPath]['author_uri'] ?? '';
+        return is_string($uri) ? $uri : '';
+    }
+
+    /**
+     * Resolve the connector's own rebranded plugin `name` from the
+     * per-plugin overrides if the operator set one. Used by the
+     * `custom_login` toggle for the login logo's hover/accessible
+     * text, and by `adminbar_logo` for the replacement node's
+     * screen-reader text.
+     *
+     * Returns the empty string when no override is configured so
+     * callers can fall through to their own defaults.
+     */
+    private function resolveConnectorPluginName(): string
+    {
+        $overrides = $this->getPluginOverrides();
+        $ownPath = defined('DECKWP_CONNECT_BASENAME') ? DECKWP_CONNECT_BASENAME : '';
+        if ($ownPath === '' || ! isset($overrides[$ownPath]) || ! is_array($overrides[$ownPath])) {
+            return '';
+        }
+        $name = $overrides[$ownPath]['name'] ?? '';
+        return is_string($name) ? $name : '';
+    }
+
+    /**
+     * Validate a string as a CSS hex color (`#RGB`, `#RGBA`,
+     * `#RRGGBB`, `#RRGGBBAA`). Returns the input unchanged when
+     * valid, or the empty string when not — caller treats empty as
+     * "skip the color override entirely" rather than emitting
+     * potentially invalid CSS that could break the rendered page.
+     *
+     * Why this lives in Branding instead of WhitelabelRoute: the
+     * storage layer accepts arbitrary strings (configured shape =
+     * "any string"). Strict validation at render time means stale
+     * configs from old dashboards never produce broken CSS, no
+     * matter what got written into the option.
+     */
+    private function sanitizeHexColor(string $color): string
+    {
+        if ($color === '') {
+            return '';
+        }
+        // Allow 3 / 4 / 6 / 8 hex digits with or without leading `#`.
+        // Normalize to always have the `#` prefix on return.
+        $color = ltrim($color, '#');
+        if (! preg_match('/^[0-9a-fA-F]{3,8}$/', $color)) {
+            return '';
+        }
+        $len = strlen($color);
+        if ($len !== 3 && $len !== 4 && $len !== 6 && $len !== 8) {
+            return '';
+        }
+        return '#' . $color;
     }
 
     /**
