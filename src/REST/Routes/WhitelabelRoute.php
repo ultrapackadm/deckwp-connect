@@ -27,12 +27,23 @@ use WP_REST_Response;
  *         },
  *         "wp-rocket/wp-rocket.php": { "hide": true }
  *       },
- *       "themes": { ... }   // reserved for v2
+ *       "themes": { ... },   // reserved for v2
+ *       "toggles": {          // v0.21.0+ agency-level switches
+ *         "hide_updates":        true,
+ *         "suppress_activate":   true,
+ *         "help_links":          true,
+ *         "help_links_url":      "https://youragency.com/help",
+ *         "custom_login":        false,
+ *         "custom_login_logo_url": "",
+ *         "custom_login_color":  "",
+ *         "adminbar_logo":       false,
+ *         "adminbar_logo_url":   ""
+ *       }
  *     }
  *
  * Response 200:
  *
- *     { "ok": true, "stored": { "plugins": 2, "themes": 0 } }
+ *     { "ok": true, "stored": { "plugins": 2, "themes": 0, "toggles": 3 } }
  *
  * The dashboard sends the full intended state on every call (no
  * incremental edits). When the operator updates a plugin's branding
@@ -93,10 +104,12 @@ class WhitelabelRoute
 
         $rawPlugins = isset($body['plugins']) && is_array($body['plugins']) ? $body['plugins'] : [];
         $rawThemes  = isset($body['themes'])  && is_array($body['themes'])  ? $body['themes']  : [];
+        $rawToggles = isset($body['toggles']) && is_array($body['toggles']) ? $body['toggles'] : [];
 
         $payload = [
             'plugins' => $this->sanitizePluginOverrides($rawPlugins),
             'themes'  => $this->sanitizeThemeOverrides($rawThemes),
+            'toggles' => $this->sanitizeToggles($rawToggles),
         ];
 
         update_site_option(Branding::OPTION_KEY, $payload);
@@ -107,6 +120,13 @@ class WhitelabelRoute
                 'stored' => [
                     'plugins' => count($payload['plugins']),
                     'themes'  => count($payload['themes']),
+                    // Count of toggles that resolved to a non-default
+                    // value, so the dashboard can confirm the round-
+                    // trip stored what it sent.
+                    'toggles' => count(array_filter(
+                        $payload['toggles'],
+                        fn ($v) => $v !== false && $v !== ''
+                    )),
                 ],
             ],
             200
@@ -157,5 +177,65 @@ class WhitelabelRoute
     private function sanitizeThemeOverrides(array $overrides): array
     {
         return [];
+    }
+
+    /**
+     * Whitelabel-feature toggle block (v0.21.0+). Distinct from
+     * `plugins`/`themes` because these aren't per-item overrides —
+     * they're agency-level on/off switches the
+     * {@see \DeckWP\Connect\Whitelabel\Branding} class consults
+     * across multiple WP filters (login screen, adminbar, plugin
+     * activation notices, etc.).
+     *
+     * Shape (all keys optional, missing = default):
+     *   - hide_updates        bool   suppress "Update available" notice
+     *                                for the connector itself
+     *   - suppress_activate   bool   suppress the "Plugin activated"
+     *                                admin notice after activation
+     *   - help_links          bool   redirect plugin row support meta
+     *                                to a custom URL
+     *   - help_links_url      string custom URL the toggle above points
+     *                                at (required when help_links=true)
+     *   - custom_login        bool   replace WP login screen logo + color
+     *   - custom_login_logo_url   string  externally-hosted PNG/SVG URL
+     *   - custom_login_color      string  hex like "#1a8fc4"
+     *   - adminbar_logo       bool   replace WP logo node in adminbar
+     *   - adminbar_logo_url   string externally-hosted PNG/SVG URL
+     *
+     * Unknown keys are dropped; type-mismatched values fall back to
+     * the type-correct default for that key. Empty strings for the
+     * URL/color fields are stored as empty (the consumer treats
+     * empty as "no override").
+     *
+     * @param  array<string, mixed> $toggles
+     * @return array<string, mixed>
+     */
+    private function sanitizeToggles(array $toggles): array
+    {
+        $bools = [
+            'hide_updates',
+            'suppress_activate',
+            'help_links',
+            'custom_login',
+            'adminbar_logo',
+        ];
+        $strings = [
+            'help_links_url',
+            'custom_login_logo_url',
+            'custom_login_color',
+            'adminbar_logo_url',
+        ];
+
+        $out = [];
+        foreach ($bools as $key) {
+            $out[$key] = isset($toggles[$key]) ? (bool) $toggles[$key] : false;
+        }
+        foreach ($strings as $key) {
+            $out[$key] = isset($toggles[$key]) && is_string($toggles[$key])
+                ? $toggles[$key]
+                : '';
+        }
+
+        return $out;
     }
 }

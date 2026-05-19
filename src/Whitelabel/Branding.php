@@ -32,6 +32,19 @@ defined('ABSPATH') || exit;
  *     doesn't render. The plugin is still loaded by WP; only the
  *     UI presence is suppressed.
  *
+ * Plus agency-level toggles (v0.21.0+) — boolean switches that
+ * apply globally, not per-plugin. Currently shipped:
+ *
+ *   - `hide_updates` — strip the connector's OWN row from the
+ *     update_plugins transient so customer wp-admin doesn't
+ *     surface an "Update available" notice for the rebranded
+ *     plugin. Distinct from {@see UpdateSuppressor} which gates
+ *     the dashboard's managed-slugs list.
+ *
+ * Other toggles (`suppress_activate`, `help_links`, `custom_login`,
+ * `adminbar_logo`) are reserved in the config shape but not yet
+ * wired — each comes in its own follow-up commit.
+ *
  * ## What this class does NOT do
  *
  * - Theme rebrand. Reserved for v2 (the option storage already
@@ -77,6 +90,13 @@ class Branding
         add_filter('all_plugins',                     [$this, 'filterAllPlugins'],   9999);
         add_filter('plugin_row_meta',                 [$this, 'filterPluginRowMeta'], 9999, 2);
         add_filter('network_admin_plugin_row_meta',   [$this, 'filterPluginRowMeta'], 9999, 2);
+
+        // Agency-level whitelabel toggles (v0.21.0+). Each toggle is
+        // wired here against the right WP hook. The actual on/off
+        // gate happens inside the handler via `isToggleOn()` so the
+        // hooks stay registered regardless of config — keeps the
+        // hook lifecycle simple and lets the dashboard toggle live.
+        add_filter('site_transient_update_plugins',   [$this, 'filterOwnUpdateNotice'], 99999);
     }
 
     /**
@@ -151,6 +171,49 @@ class Branding
     }
 
     /**
+     * Strip the connector's own row from the `update_plugins` site
+     * transient when the operator has flipped `hide_updates` ON in
+     * the dashboard. The customer's wp-admin won't render an
+     * "Update available" banner for the rebranded plugin (which
+     * would otherwise leak DeckWP's identity through the upgrader
+     * dialog + tempt the customer into self-upgrading outside the
+     * orchestrated flow).
+     *
+     * Different gate than {@see \DeckWP\Connect\Updater\UpdateSuppressor}
+     * which strips DASHBOARD-managed slugs. This one targets the
+     * connector's OWN row only, gated on the whitelabel toggle.
+     *
+     * Bypasses when `DECKWP_CONNECT_ALLOW_MANAGED_UPDATES` is true —
+     * same posture as the suppressor so the dashboard's own
+     * /install-batch refresh isn't accidentally blanked.
+     *
+     * @param  mixed $transient
+     * @return mixed
+     */
+    public function filterOwnUpdateNotice($transient)
+    {
+        if (defined('DECKWP_CONNECT_ALLOW_MANAGED_UPDATES') && DECKWP_CONNECT_ALLOW_MANAGED_UPDATES) {
+            return $transient;
+        }
+        if (! $this->isToggleOn('hide_updates')) {
+            return $transient;
+        }
+        if (! is_object($transient) || ! isset($transient->response) || ! is_array($transient->response)) {
+            return $transient;
+        }
+
+        // The connector's own plugin path is the only entry we strip
+        // here. Other entries are left alone — that's the
+        // UpdateSuppressor's job.
+        $ownPath = defined('DECKWP_CONNECT_BASENAME') ? DECKWP_CONNECT_BASENAME : '';
+        if ($ownPath !== '' && isset($transient->response[$ownPath])) {
+            unset($transient->response[$ownPath]);
+        }
+
+        return $transient;
+    }
+
+    /**
      * @return array<string, array<string, mixed>>
      */
     private function getPluginOverrides(): array
@@ -160,5 +223,27 @@ class Branding
             return [];
         }
         return $config['plugins'];
+    }
+
+    /**
+     * Read a single boolean toggle from the whitelabel config option.
+     * Missing or non-boolean values default to `false` — safer than
+     * inheriting whatever truthy thing a future config drift produces.
+     *
+     * Cached per-request via a static so multiple toggle checks on
+     * the same admin page don't hammer the option layer (which
+     * triggers `pre_option_*` filters + `wp_load_alloptions`
+     * cascades).
+     */
+    private function isToggleOn(string $key): bool
+    {
+        static $toggles = null;
+        if ($toggles === null) {
+            $config = (array) get_site_option(self::OPTION_KEY, []);
+            $toggles = (isset($config['toggles']) && is_array($config['toggles']))
+                ? $config['toggles']
+                : [];
+        }
+        return isset($toggles[$key]) && (bool) $toggles[$key];
     }
 }

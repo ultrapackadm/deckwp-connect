@@ -4,6 +4,68 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.21.0] — 2026-05-19
+
+Whitelabel foundation extended with agency-level toggles —
+boolean switches that apply globally (not per-plugin) for
+agency rebrand workflows. v0.21.0 ships the foundation + the
+first toggle wired; the remaining four toggles are reserved
+in the config shape and land in follow-up releases.
+
+### Added
+
+- `WhitelabelRoute` now accepts a `toggles` block alongside the
+  existing `plugins` / `themes` blocks:
+
+  ```json
+  {
+    "plugins": { ... },
+    "themes": { ... },
+    "toggles": {
+      "hide_updates":         true,
+      "suppress_activate":    false,
+      "help_links":           false,
+      "help_links_url":       "",
+      "custom_login":         false,
+      "custom_login_logo_url": "",
+      "custom_login_color":   "",
+      "adminbar_logo":        false,
+      "adminbar_logo_url":    ""
+    }
+  }
+  ```
+
+  Sanitization is strict (bools coerced, strings type-checked,
+  unknown keys dropped). Response envelope gains a `stored.toggles`
+  count alongside the existing `plugins` / `themes` counts.
+
+- `Branding::filterOwnUpdateNotice` — first toggle wired:
+  `hide_updates`. When ON, strips the connector's OWN row from
+  the `update_plugins` site transient so the rebranded plugin
+  doesn't surface an "Update available" notice in customer
+  wp-admin. Distinct from `UpdateSuppressor` (which gates the
+  dashboard's managed-slugs list); this one targets the
+  connector itself only.
+
+  Bypasses when `DECKWP_CONNECT_ALLOW_MANAGED_UPDATES` is
+  defined truthy, same posture as the suppressor — the
+  dashboard's own `/install-batch` refresh must see the row.
+
+### Wire contract change
+
+Purely additive. Pre-v0.21.0 connectors ignore the new `toggles`
+key; pre-v0.21.0 dashboards don't send it. Existing
+`plugins` / `themes` override semantics unchanged.
+
+### Reserved (not yet wired)
+
+The config shape carries fields for four more toggles —
+`suppress_activate`, `help_links`, `custom_login`,
+`adminbar_logo`. Each comes with its own WP-filter-specific
+implementation that needs visual review in the customer
+wp-admin; landing them one-per-commit so each can be tested
+independently.
+
 ## [0.20.0] — 2026-05-17
 
 Theme inventory ships in the heartbeat payload. The dashboard now has
