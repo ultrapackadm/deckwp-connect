@@ -3,7 +3,7 @@
  * Plugin Name:       DeckWP Connect
  * Plugin URI:        https://deckwp.com
  * Description:       Connects this WordPress site to your DeckWP dashboard for one-click bulk updates, scan + auto-fix, automatic backup & rollback, SSO login, and remote management.
- * Version:           0.21.0
+ * Version:           0.22.0
  * Author:            DeckWP
  * Author URI:        https://deckwp.com
  * License:           GPLv2 or later
@@ -17,7 +17,7 @@
 
 defined('ABSPATH') || exit;
 
-define('DECKWP_CONNECT_VERSION',  '0.21.0');
+define('DECKWP_CONNECT_VERSION',  '0.22.0');
 define('DECKWP_CONNECT_FILE',     __FILE__);
 define('DECKWP_CONNECT_DIR',      plugin_dir_path(__FILE__));
 define('DECKWP_CONNECT_URL',      plugin_dir_url(__FILE__));

@@ -4,6 +4,64 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.22.0] — 2026-05-19
+
+Whitelabel toggles: second wave. Two more of the four reserved
+toggles from v0.21.0 ship a working WP-side handler. The
+remaining two image-based toggles (`custom_login`,
+`adminbar_logo`) stay reserved for v0.23.0.
+
+### Added
+
+- `Branding::filterPluginRowMeta` (was a pass-through in v0.21.0)
+  now wires the `help_links` toggle. When ON, every plugin row in
+  `wp-admin/plugins.php` has all URL-bearing meta items stripped
+  (View details, Visit plugin site, By Author). If
+  `help_links_url` is set in the config, a single "Support" anchor
+  pointing at that URL is appended. Version + plain-text meta
+  items are preserved.
+
+  Applies to ALL plugin rows, not just the connector's — matches
+  the agency-rebrand UX promise (one Support destination across
+  the whole plugins list, not one-per-plugin scattered links).
+
+- `Branding::maybePrintSuppressActivateCss` wires the
+  `suppress_activate` toggle via the
+  `admin_print_styles-plugins.php` action. When ON and the request
+  carries an `activate` / `deactivate` / `deleted` query arg (the
+  query args that cause WP to render an inline state-change notice
+  on plugins.php), the handler emits a scoped `<style>` block that
+  hides the `.wrap > #message` / `.wrap > .notice.updated.notice-success`
+  divs core writes for those notices.
+
+  CSS injection (vs. mutating `$_GET` in `admin_init`) was chosen
+  because the notice is rendered by an `echo` in core's
+  `plugins.php` template — there's no hook to unhook — and
+  mutating the query args would side-effect the row-highlighting
+  the plugin list table does for activate-multi. CSS is the
+  least invasive option.
+
+- `Branding::getToggleString()` helper alongside the existing
+  `isToggleOn()` — same per-request cache, returns `''` for
+  missing / non-string values. Will be reused by the v0.23.0
+  image-URL toggles.
+
+### Wire contract change
+
+None. The `toggles` block on `WhitelabelRoute` already accepts
+both keys (v0.21.0); this release wires the WP-side
+behavior. Existing dashboards continue to send the full toggle
+block and pre-v0.22.0 connectors silently ignore these two
+keys' effects (storage was already happening).
+
+### Still reserved (not yet wired)
+
+- `custom_login` — login screen logo override (URL + accent color)
+- `adminbar_logo` — admin bar logo node override (URL)
+
+Both ship in v0.23.0 once the image-URL handling pattern is
+worked out and visually reviewed on the wptestes connector.
+
 ## [0.21.0] — 2026-05-19
 
 Whitelabel foundation extended with agency-level toggles —

@@ -35,15 +35,30 @@ defined('ABSPATH') || exit;
  * Plus agency-level toggles (v0.21.0+) — boolean switches that
  * apply globally, not per-plugin. Currently shipped:
  *
- *   - `hide_updates` — strip the connector's OWN row from the
- *     update_plugins transient so customer wp-admin doesn't
- *     surface an "Update available" notice for the rebranded
- *     plugin. Distinct from {@see UpdateSuppressor} which gates
- *     the dashboard's managed-slugs list.
+ *   - `hide_updates` (v0.21.0) — strip the connector's OWN row
+ *     from the update_plugins transient so customer wp-admin
+ *     doesn't surface an "Update available" notice for the
+ *     rebranded plugin. Distinct from {@see UpdateSuppressor}
+ *     which gates the dashboard's managed-slugs list.
  *
- * Other toggles (`suppress_activate`, `help_links`, `custom_login`,
- * `adminbar_logo`) are reserved in the config shape but not yet
- * wired — each comes in its own follow-up commit.
+ *   - `suppress_activate` (v0.22.0) — hide the inline
+ *     "Plugin activated." / "Plugin deactivated." notice WP
+ *     renders on `plugins.php` after a state-change action. The
+ *     notice is rendered inline by core (not via `admin_notices`)
+ *     so we can't unhook it — we inject scoped CSS on the
+ *     plugins.php screen to hide it. The plugin's actual
+ *     activation isn't affected, only the leak-y confirmation
+ *     banner.
+ *
+ *   - `help_links` (v0.22.0) — strip URL-bearing items from the
+ *     plugin row meta (View details, Visit plugin site, Author
+ *     site) across ALL plugin rows. If `help_links_url` is set,
+ *     append a single "Support" anchor pointing at it. Version +
+ *     "By Author" text items are preserved (no URL leak).
+ *
+ * Other toggles (`custom_login`, `adminbar_logo`) are reserved in
+ * the config shape but not yet wired — each comes in its own
+ * follow-up commit.
  *
  * ## What this class does NOT do
  *
@@ -56,10 +71,10 @@ defined('ABSPATH') || exit;
  *   network-active without per-blog overrides. Storage is one
  *   network-wide config; per-blog whitelabel is a wire-shape
  *   extension if ever needed (out of scope for MVP).
- * - Suppress the plugin's own "View details" thickbox. The
- *   `plugin_row_meta` filter is wired but the v1 implementation
- *   passes through — operator demand for that level of control
- *   is rare; revisit when a customer asks.
+ * - Suppress the plugin's own "View details" thickbox in a
+ *   targeted way (we strip all URL-bearing meta when
+ *   `help_links` is on, but we don't selectively hide individual
+ *   meta items by their text — too brittle across locales).
  *
  * ## Storage
  *
@@ -97,6 +112,12 @@ class Branding
         // hooks stay registered regardless of config — keeps the
         // hook lifecycle simple and lets the dashboard toggle live.
         add_filter('site_transient_update_plugins',   [$this, 'filterOwnUpdateNotice'], 99999);
+
+        // `suppress_activate` — fires only on the plugins.php screen
+        // (the only place WP renders the inline activate/deactivate
+        // notice). The handler self-gates on the toggle so the
+        // CSS is silent when the operator hasn't opted in.
+        add_action('admin_print_styles-plugins.php', [$this, 'maybePrintSuppressActivateCss'], 100);
     }
 
     /**
@@ -156,10 +177,36 @@ class Branding
     }
 
     /**
-     * Pass-through in v1. Wired for symmetry with `filterAllPlugins`
-     * so a future override of `View details` / per-row meta links
-     * has a hook point already in place — bumping this method is
-     * a no-coordination change.
+     * `help_links` (v0.22.0) — strip URL-bearing meta items from the
+     * plugin row across ALL plugin rows on the plugins admin screen.
+     * When `help_links_url` is set, append a single "Support" anchor
+     * pointing at the operator-configured URL so the customer has
+     * exactly one help destination.
+     *
+     * Why "all rows" (not just the connector's): the toggle's UX
+     * promise on the dashboard is agency-wide rebrand — leaving
+     * other plugins' "Visit plugin site" / "View details" links
+     * intact would defeat the point (customer would still reach
+     * upstream pages for every plugin BUT the connector). Mirrors
+     * Manage GPL / ManageWP behavior of stripping these globally.
+     *
+     * What's stripped: any meta string containing an `<a` tag is
+     * dropped. WP's default meta items include:
+     *
+     *   - "Version X.Y.Z"            (kept — pure text)
+     *   - "By <a>Author</a>"         (stripped — has anchor)
+     *   - "<a>View details</a>"       (stripped)
+     *   - "<a>Visit plugin site</a>"  (stripped)
+     *
+     * The "By Author" line is collateral damage — its anchor wraps
+     * the author name so we can't keep one without the other.
+     * Acceptable in v1: the operator's intent with this toggle is
+     * to scrub upstream identity, and the author byline is part of
+     * that identity.
+     *
+     * Pass-through when toggle is off — registered hook stays
+     * cheap (one option read on first invocation per request,
+     * cached after).
      *
      * @param  string[] $meta
      * @param  string   $pluginPath
@@ -167,7 +214,88 @@ class Branding
      */
     public function filterPluginRowMeta($meta, $pluginPath)
     {
-        return $meta;
+        if (! is_array($meta) || ! $this->isToggleOn('help_links')) {
+            return $meta;
+        }
+
+        $stripped = [];
+        foreach ($meta as $item) {
+            if (is_string($item) && preg_match('/<a\s/i', $item)) {
+                continue;
+            }
+            $stripped[] = $item;
+        }
+
+        $url = $this->getToggleString('help_links_url');
+        if ($url !== '') {
+            // esc_url + esc_html — defensive escaping even though
+            // the toggle string came in through WhitelabelRoute's
+            // sanitization. The plugins list table renders meta
+            // via `implode(' | ', $meta)` without further escaping.
+            $stripped[] = sprintf(
+                '<a href="%s" target="_blank" rel="noopener noreferrer">%s</a>',
+                esc_url($url),
+                esc_html__('Support', 'deckwp-connect')
+            );
+        }
+
+        return $stripped;
+    }
+
+    /**
+     * `suppress_activate` (v0.22.0) — inject scoped CSS on the
+     * plugins.php screen to hide the inline "Plugin activated."
+     * (and sibling) notice that WP renders directly from
+     * `wp-admin/plugins.php` based on `$_GET['activate']` /
+     * `$_GET['deactivate']` query strings.
+     *
+     * Why CSS injection instead of unhooking: the notice is rendered
+     * by an `echo` in core's `plugins.php` template, not via the
+     * `admin_notices` action — there's no hook to unhook. Mutating
+     * `$_GET` in admin_init would technically work but has unknown
+     * side effects on other code that reads those query args (plugins
+     * list table itself reads `activate-multi` to highlight the
+     * activated rows). CSS hiding is the least invasive option.
+     *
+     * Scope: targets `.wrap > #message` (the specific div WP outputs
+     * for this notice) and `.wrap > .notice.updated.notice-success`
+     * (the modern variant on recent WP versions). Other admin notices
+     * on the same page (errors, plugin-update-banners) are untouched.
+     *
+     * Only emits the `<style>` tag when the toggle is ON AND there's
+     * a state-change query arg present — the CSS is otherwise dead
+     * weight on every plugins.php load.
+     */
+    public function maybePrintSuppressActivateCss(): void
+    {
+        if (! $this->isToggleOn('suppress_activate')) {
+            return;
+        }
+        // Only inject when a state-change notice would actually
+        // render — checking the query args keeps the CSS off the
+        // page during normal browsing of the plugins list.
+        $relevantArgs = ['activate', 'activate-multi', 'deactivate', 'deactivate-multi', 'deleted'];
+        $present = false;
+        foreach ($relevantArgs as $arg) {
+            if (isset($_GET[$arg])) {
+                $present = true;
+                break;
+            }
+        }
+        if (! $present) {
+            return;
+        }
+
+        // Hides:
+        //   - <div id="message" class="updated ...">  (classic markup)
+        //   - <div class="notice updated notice-success">  (modern)
+        // Scoped to `.wrap` to avoid hiding notices that legitimately
+        // appear elsewhere on the page (modal headers, etc.).
+        echo '<style id="deckwp-suppress-activate">'
+            . '.wrap > #message,'
+            . '.wrap > .notice.updated.notice-success,'
+            . '.wrap > .notice-success.is-dismissible{display:none!important;}'
+            . '</style>';
     }
 
     /**
@@ -237,6 +365,28 @@ class Branding
      */
     private function isToggleOn(string $key): bool
     {
+        return (bool) ($this->loadToggles()[$key] ?? false);
+    }
+
+    /**
+     * Read a string-valued toggle (e.g. `help_links_url`,
+     * `custom_login_logo_url`). Missing or non-string values
+     * resolve to `''` — consumers treat empty as "no override".
+     *
+     * Shares the same per-request cache as {@see self::isToggleOn()}
+     * via {@see self::loadToggles()}.
+     */
+    private function getToggleString(string $key): string
+    {
+        $val = $this->loadToggles()[$key] ?? '';
+        return is_string($val) ? $val : '';
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function loadToggles(): array
+    {
         static $toggles = null;
         if ($toggles === null) {
             $config = (array) get_site_option(self::OPTION_KEY, []);
@@ -244,6 +394,6 @@ class Branding
                 ? $config['toggles']
                 : [];
         }
-        return isset($toggles[$key]) && (bool) $toggles[$key];
+        return $toggles;
     }
 }
