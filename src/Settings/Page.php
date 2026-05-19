@@ -96,13 +96,23 @@ class Page
     }
 
     /**
-     * Register the page under Settings → DeckWP Connect.
+     * Register the page under Settings → DeckWP Connect (or the
+     * operator's rebranded equivalent — see {@see self::rebrandName()}).
+     *
+     * The menu + page title both pull from the whitelabel config so
+     * the customer's wp-admin sidebar shows the agency's brand
+     * instead of "DeckWP Connect". `add_options_page` snapshots
+     * both titles at registration time, so we have to resolve the
+     * rebrand value here (not at render time) — `admin_menu` fires
+     * after `init`, by which point the whitelabel site option is
+     * available.
      */
     public function addMenuPage(): void
     {
+        $brand = $this->rebrandName();
         add_options_page(
-            __('DeckWP Connect', 'deckwp-connect'),
-            __('DeckWP Connect', 'deckwp-connect'),
+            $brand,
+            $brand,
             self::CAPABILITY,
             self::SLUG,
             [$this, 'render']
@@ -119,7 +129,14 @@ class Page
             return;
         }
         if (! current_user_can(self::CAPABILITY)) {
-            wp_die(esc_html__('You do not have permission to manage DeckWP Connect.', 'deckwp-connect'), 403);
+            wp_die(
+                esc_html(sprintf(
+                    /* translators: %s: the (potentially rebranded) plugin name. */
+                    __('You do not have permission to manage %s.', 'deckwp-connect'),
+                    $this->rebrandName()
+                )),
+                403
+            );
         }
 
         $action = sanitize_key((string) wp_unslash($_POST['deckwp_connect_action']));
@@ -272,7 +289,11 @@ class Page
             add_settings_error(
                 self::SLUG,
                 'disconnected',
-                __('Disconnected from DeckWP. The dashboard has been notified.', 'deckwp-connect'),
+                sprintf(
+                    /* translators: %s: the (potentially rebranded) service/dashboard name. */
+                    __('Disconnected from %s. The dashboard has been notified.', 'deckwp-connect'),
+                    $this->rebrandName()
+                ),
                 'success'
             );
 
@@ -304,7 +325,7 @@ class Page
         $this->flushTransientNotices();
 
         echo '<div class="wrap">';
-        echo '<h1>' . esc_html__('DeckWP Connect', 'deckwp-connect') . '</h1>';
+        echo '<h1>' . esc_html($this->rebrandName()) . '</h1>';
 
         settings_errors(self::SLUG);
 
@@ -347,7 +368,11 @@ class Page
             : '';
 
         echo '<div class="notice notice-warning"><p>';
-        echo '<strong>' . esc_html__('DeckWP revoked this connection.', 'deckwp-connect') . '</strong> ';
+        echo '<strong>' . esc_html(sprintf(
+            /* translators: %s: the (potentially rebranded) service/dashboard name. */
+            __('%s revoked this connection.', 'deckwp-connect'),
+            $this->rebrandName()
+        )) . '</strong> ';
         echo esc_html__(
             'Your WordPress site continues to work normally. The dashboard removed our credentials, so we cleared the local connection too.',
             'deckwp-connect'
@@ -409,10 +434,14 @@ class Page
         }
 
         echo '<p>';
-        echo esc_html__(
-            'Pair this WordPress site with your DeckWP dashboard to enable bulk updates, scans, backups, and remote management. Generate a pairing token in the dashboard at /sites/create, then paste it below.',
-            'deckwp-connect'
-        );
+        echo esc_html(sprintf(
+            /* translators: %s: the (potentially rebranded) service/dashboard name. */
+            __(
+                'Pair this WordPress site with your %s dashboard to enable bulk updates, scans, backups, and remote management. Generate a pairing token in the dashboard, then paste it below.',
+                'deckwp-connect'
+            ),
+            $this->rebrandName()
+        ));
         echo '</p>';
 
         echo '<form method="post" action="">';
@@ -433,7 +462,11 @@ class Page
         echo '<th scope="row"><label for="deckwp_connect_platform">' . esc_html__('Dashboard URL', 'deckwp-connect') . '</label></th>';
         echo '<td>';
         echo '<input type="url" id="deckwp_connect_platform" name="platform_url" class="regular-text code" value="' . esc_attr($platformUrl) . '" />';
-        echo '<p class="description">' . esc_html__('Leave the default unless you are using a staging or self-hosted DeckWP install.', 'deckwp-connect') . '</p>';
+        echo '<p class="description">' . esc_html(sprintf(
+            /* translators: %s: the (potentially rebranded) service/dashboard name. */
+            __('Leave the default unless you are using a staging or self-hosted %s install.', 'deckwp-connect'),
+            $this->rebrandName()
+        )) . '</p>';
         echo '</td>';
         echo '</tr>';
 
@@ -461,7 +494,11 @@ class Page
             ? rtrim($platformUrl, '/') . '/sites/' . rawurlencode($siteId)
             : '';
 
-        echo '<p>' . esc_html__('This site is paired with DeckWP.', 'deckwp-connect') . '</p>';
+        echo '<p>' . esc_html(sprintf(
+            /* translators: %s: the (potentially rebranded) service/dashboard name. */
+            __('This site is paired with %s.', 'deckwp-connect'),
+            $this->rebrandName()
+        )) . '</p>';
 
         echo '<table class="widefat striped" style="max-width:780px;"><tbody>';
         $this->statusRow(__('Site UUID', 'deckwp-connect'), $siteId, $siteLink);
@@ -506,7 +543,11 @@ class Page
             'delete',
             'submit',
             false,
-            ['onclick' => "return confirm('" . esc_js(__('Disconnect this site from DeckWP? The dashboard will lose remote control until you re-pair.', 'deckwp-connect')) . "');"]
+            ['onclick' => "return confirm('" . esc_js(sprintf(
+                /* translators: %s: the (potentially rebranded) service/dashboard name. */
+                __('Disconnect this site from %s? The dashboard will lose remote control until you re-pair.', 'deckwp-connect'),
+                $this->rebrandName()
+            )) . "');"]
         );
         echo '</form>';
 
@@ -528,5 +569,60 @@ class Page
         }
         echo '</code></td>';
         echo '</tr>';
+    }
+
+    /**
+     * Resolve the operator-configured rebrand name for the connector,
+     * or fall back to the default "DeckWP Connect" string.
+     *
+     * The dashboard's whitelabel UI writes the operator's chosen
+     * plugin name into `plugins[<connector-basename>].name` in the
+     * `deckwp_whitelabel_config` site option (sanitized by
+     * {@see \DeckWP\Connect\REST\Routes\WhitelabelRoute}). This
+     * method reads that one value and returns it verbatim when
+     * non-empty.
+     *
+     * The Settings\Page calls this in three places:
+     *
+     *   1. `add_options_page()` — sets both menu_title (sidebar
+     *      label) AND page_title (browser tab title).
+     *   2. `<h1>` of the rendered Settings page.
+     *   3. Body text on the page that previously hardcoded
+     *      "DeckWP Connect" / "DeckWP" — paired-state banner,
+     *      disconnect confirmation, revoke notice, etc.
+     *
+     * Why we don't depend on {@see \DeckWP\Connect\Whitelabel\Branding}:
+     * keeping this read inline avoids a class dependency from
+     * Settings → Whitelabel and avoids the per-request cache shared
+     * with Branding (this only gets called a handful of times per
+     * page load, not in any hot loop). The option key is a literal
+     * to dodge the circular-import concern; it's documented as
+     * synced with `Branding::OPTION_KEY`.
+     *
+     * Always-on (no toggle): the per-plugin `name` override on the
+     * connector's own row IS the rebrand intent. If the operator
+     * left it empty, they get the default string back — no separate
+     * "use rebrand here" switch needed.
+     */
+    private function rebrandName(): string
+    {
+        // Synced with \DeckWP\Connect\Whitelabel\Branding::OPTION_KEY.
+        // Inlined to avoid coupling Settings → Whitelabel.
+        $config = (array) get_site_option('deckwp_whitelabel_config', []);
+
+        $plugins = isset($config['plugins']) && is_array($config['plugins'])
+            ? $config['plugins']
+            : [];
+
+        $ownPath = defined('DECKWP_CONNECT_BASENAME') ? DECKWP_CONNECT_BASENAME : '';
+
+        if ($ownPath !== '' && isset($plugins[$ownPath]) && is_array($plugins[$ownPath])) {
+            $name = $plugins[$ownPath]['name'] ?? '';
+            if (is_string($name) && $name !== '') {
+                return $name;
+            }
+        }
+
+        return __('DeckWP Connect', 'deckwp-connect');
     }
 }

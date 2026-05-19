@@ -4,6 +4,72 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.24.0] — 2026-05-19
+
+Whitelabel reach extended to the connector's own Settings page.
+v0.21.0–v0.23.0 covered the plugins list (`all_plugins`),
+plugin row meta, and login + adminbar surfaces — but the
+**Settings → DeckWP Connect** menu item, the page `<h1>`, and
+every "This site is paired with DeckWP." / "Disconnect from
+DeckWP?" body string still rendered the upstream brand. The
+customer's wp-admin sidebar leaked DeckWP even with a fully
+configured rebrand.
+
+### Added
+
+- `Settings\Page::rebrandName()` reads the connector's own
+  per-plugin override (`plugins[<basename>].name`) from the
+  `deckwp_whitelabel_config` site option and returns it
+  verbatim when non-empty; falls back to the
+  `__('DeckWP Connect', ...)` string when the operator hasn't
+  configured a rebrand.
+
+  No new toggle — the existing per-plugin `name` field IS the
+  rebrand intent.
+
+### Changed
+
+- `Settings\Page::addMenuPage()` now passes the resolved
+  rebrand name as BOTH `page_title` (browser tab) and
+  `menu_title` (sidebar). The `add_options_page()` call
+  snapshots both at registration time, so the resolution
+  happens in `addMenuPage()` (called from `admin_menu`,
+  after `init` has loaded the option).
+- `Settings\Page::render()` `<h1>` switched from
+  `esc_html__('DeckWP Connect', ...)` to
+  `esc_html($this->rebrandName())`.
+- Five body strings on the Settings page rewritten as
+  `sprintf` templates with a `%s` placeholder for the
+  rebrand name:
+  - "You do not have permission to manage %s." (permission
+    error)
+  - "Disconnected from %s." (post-disconnect success)
+  - "%s revoked this connection." (dashboard-initiated
+    revoke banner)
+  - "Pair this WordPress site with your %s dashboard..."
+    (unpaired state form intro)
+  - "This site is paired with %s." (paired state banner)
+  - "Disconnect this site from %s?" (confirm dialog)
+  - "Leave the default unless you are using a staging or
+    self-hosted %s install." (Dashboard URL field hint)
+
+  Each gets a `/* translators: %s: ... */` comment so the
+  string remains translatable.
+
+### Known limitations (not yet rebranded)
+
+- WP-Cron schedule `display` names (`'DeckWP Connect
+  heartbeat'`, `'DeckWP Connect scan'`) in
+  `Heartbeat\Scheduler` and `Scan\Scheduler` still hardcode
+  the upstream brand. These are only visible to users with
+  WP-Cron debug plugins (WP Crontrol, etc.) — low-visibility
+  leak, deferred until someone asks.
+
+### Wire contract change
+
+None. This is a render-only change reading the existing
+option shape.
+
 ## [0.23.0] — 2026-05-19
 
 Whitelabel toggles: final wave. The two remaining reserved
