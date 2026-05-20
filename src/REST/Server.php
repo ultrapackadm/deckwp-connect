@@ -13,6 +13,7 @@ use DeckWP\Connect\REST\Routes\InventoryRoute;
 use DeckWP\Connect\REST\Routes\MaintenanceRoute;
 use DeckWP\Connect\REST\Routes\PluginToggleRoute;
 use DeckWP\Connect\REST\Routes\RestoreBackupRoute;
+use DeckWP\Connect\REST\Routes\ThemeDeleteRoute;
 use DeckWP\Connect\REST\Routes\ThemeSwitchRoute;
 use DeckWP\Connect\REST\Routes\ScanRoute;
 use DeckWP\Connect\REST\Routes\SetManagedSlugsRoute;
@@ -82,6 +83,11 @@ use DeckWP\Connect\REST\Routes\WhitelabelRoute;
  *     to) a single installed theme. Theme equivalent of
  *     `plugin-toggle` minus the deactivate verb (WP always has
  *     exactly one active theme). Idempotent. {@see ThemeSwitchRoute}.
+ *   - POST /wp-json/deckwp/v1/theme-delete — remove an installed
+ *     theme from disk via WP's `delete_theme()`. Refuses to delete
+ *     the active theme or the parent of an active child theme;
+ *     idempotent (deleting an already-gone theme returns
+ *     `deleted: false` + clear error). {@see ThemeDeleteRoute}.
  *   - POST /wp-json/deckwp/v1/bootstrap-pairing — used by the
  *     dashboard's Automatic Pairing flow to push a pairing token
  *     INTO the connector. NOT HMAC-protected (no secret yet by
@@ -143,6 +149,9 @@ class Server
     /** @var ThemeSwitchRoute */
     private $themeSwitchRoute;
 
+    /** @var ThemeDeleteRoute */
+    private $themeDeleteRoute;
+
     /** @var BootstrapPairingRoute */
     private $bootstrapPairingRoute;
 
@@ -160,6 +169,7 @@ class Server
         WhitelabelRoute $whitelabelRoute = null,
         PluginToggleRoute $pluginToggleRoute = null,
         ThemeSwitchRoute $themeSwitchRoute = null,
+        ThemeDeleteRoute $themeDeleteRoute = null,
         BootstrapPairingRoute $bootstrapPairingRoute = null
     ) {
         $this->verifier             = $verifier ?? new HmacVerifier();
@@ -175,6 +185,7 @@ class Server
         $this->whitelabelRoute      = $whitelabelRoute ?? new WhitelabelRoute();
         $this->pluginToggleRoute    = $pluginToggleRoute ?? new PluginToggleRoute();
         $this->themeSwitchRoute     = $themeSwitchRoute ?? new ThemeSwitchRoute();
+        $this->themeDeleteRoute     = $themeDeleteRoute ?? new ThemeDeleteRoute();
         $this->bootstrapPairingRoute = $bootstrapPairingRoute ?? new BootstrapPairingRoute();
     }
 
@@ -269,6 +280,12 @@ class Server
             'deckwp/v1',
             '/theme-switch',
             $this->themeSwitchRoute->args($permissionCallback)
+        );
+
+        register_rest_route(
+            'deckwp/v1',
+            '/theme-delete',
+            $this->themeDeleteRoute->args($permissionCallback)
         );
 
         // NOTE: bootstrap-pairing does NOT use $permissionCallback

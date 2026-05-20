@@ -4,6 +4,65 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.26.0] — 2026-05-20
+
+### Added
+
+- `POST /wp-json/deckwp/v1/theme-delete` — new REST route that
+  removes an installed theme from disk via WP's `delete_theme()`.
+  Triggered by the per-row Delete button on the dashboard's
+  Themes tab (which was a UI placeholder until this release).
+
+  Body shape:
+
+  ```json
+  { "slug": "twentytwentyfour" }
+  ```
+
+  Response 200 success:
+
+  ```json
+  { "slug": "twentytwentyfour", "deleted": true, "error": null }
+  ```
+
+  Response 200 failure (theme not installed, active, parent of
+  active child, filesystem error):
+
+  ```json
+  { "slug": "...", "deleted": false,
+    "error": "Cannot delete the active theme — activate a different theme first." }
+  ```
+
+  Safety checks (in order, all return clear error messages):
+    1. Slug is non-empty (422 if missing)
+    2. Theme exists on disk (matches stylesheet OR text-domain)
+    3. Theme is NOT the active stylesheet
+    4. Theme is NOT the parent of the active child theme
+    5. `WP_Filesystem()` init succeeds (host doesn't force
+       FTP/SSH credentials)
+    6. `delete_theme()` succeeds
+    7. Re-read disk after `wp_clean_themes_cache()` to verify
+       the theme is actually gone (defends against a future
+       core change that returns true before the directory is
+       removed)
+
+  Idempotent: deleting a theme that's already gone returns
+  `deleted: false` with `error: "not installed"` rather than
+  404, so the dashboard's optimistic UI update doesn't reverse
+  on a race condition.
+
+  HMAC-verified by `HmacVerifier`. Distinct from `theme-switch`
+  (activation) because the safety + audit posture is different:
+  switch is reversible by re-switching; delete requires a full
+  re-install from the dashboard library to undo.
+
+### Wire contract change
+
+Purely additive. Pre-v0.26.0 connectors 404 the new endpoint; the
+dashboard's `RemoteThemeDeleteTrigger` (companion commit on the
+dashboard repo) surfaces that as an operator-facing
+"connector too old — update to v0.26.0+" message.
+
 ## [0.25.0] — 2026-05-20
 
 Whitelabel resilience: the operator's rebrand now sticks to
