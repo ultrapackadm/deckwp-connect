@@ -4,6 +4,59 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.25.0] — 2026-05-20
+
+Whitelabel resilience: the operator's rebrand now sticks to
+every copy of the connector on disk, not just the one at the
+canonical path. Closes the gap that surfaced after the v0.24.1
+hotfix: even with the duplicate-load guard preventing the fatal,
+a stale non-canonical copy of the connector (e.g.
+`deckwp-connect-main/deckwp-connect.php` from a manual GitHub
+source-archive upload) still rendered with the upstream brand
+on `wp-admin/plugins.php` because the dashboard's whitelabel
+push only references the canonical path.
+
+### Changed
+
+- `Branding::filterAllPlugins` now runs in two passes:
+
+  1. **Exact-path overrides** (canonical behavior, unchanged) —
+     iterates every plugin on disk and applies any override
+     whose key matches the entry's path verbatim.
+  2. **Connector-identity by basename** (new) — if a rebrand
+     was configured for the canonical
+     `deckwp-connect/deckwp-connect.php` path, the same override
+     is also applied to any other plugin on disk whose basename
+     is `deckwp-connect.php`. False-positive risk is essentially
+     zero — no third-party plugin ships a file with that name.
+
+  Pass 2 skips entries that already had their own override
+  handled by Pass 1, so an operator who explicitly rebrands an
+  unrelated plugin doesn't get their config double-rewritten.
+
+- Override-applying logic extracted into a private
+  `applyOverrideToPlugin()` helper so both passes share the
+  rewrite implementation without copy-paste. Plus two new
+  class constants (`CONNECTOR_CANONICAL_PATH` and
+  `CONNECTOR_BASENAME`) so the path string lives in one place.
+
+### Why this matters
+
+The v0.24.1 hotfix made the duplicate-folder scenario non-fatal
+(both copies can coexist without "Cannot redeclare function"
+errors), but didn't fix the rebrand application — the operator
+saw one row in `wp-admin/plugins.php` correctly rebranded as
+"Nome do plugin Generico" and a second row right next to it
+still showing "DeckWP Connect". This release closes that loop:
+both rows now render the operator's rebrand identically.
+
+### Backward compatibility
+
+Purely additive. Pre-v0.25.0 behavior (single canonical match
+per push) is fully preserved by Pass 1; Pass 2 is gated on the
+canonical override being present and only fires for additional
+copies. No wire contract change, no DB migration.
+
 ## [0.24.1] — 2026-05-19
 
 ### Fixed

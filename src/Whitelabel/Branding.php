@@ -32,6 +32,23 @@ defined('ABSPATH') || exit;
  *     doesn't render. The plugin is still loaded by WP; only the
  *     UI presence is suppressed.
  *
+ * `filterAllPlugins` runs in two passes (v0.25.0+):
+ *
+ *   1. Exact-path matches. Iterates every plugin on disk and
+ *      applies overrides whose key matches the entry's path
+ *      verbatim. Handles the canonical case where the customer's
+ *      WP install layout matches what the dashboard expects.
+ *
+ *   2. Connector-identity-by-basename. If a rebrand was configured
+ *      for `deckwp-connect/deckwp-connect.php` (the canonical
+ *      connector path), Pass 2 also applies it to ANY other plugin
+ *      on disk whose basename is `deckwp-connect.php`. This
+ *      survives the "duplicate folder install" scenario where a
+ *      stale copy of the connector lives at e.g.
+ *      `deckwp-connect-main/deckwp-connect.php` from a manual ZIP
+ *      upload that wasn't cleaned up — the operator's rebrand
+ *      sticks on every copy regardless of folder name.
+ *
  * Plus agency-level toggles (v0.21.0+) — boolean switches that
  * apply globally, not per-plugin. Currently shipped:
  *
@@ -154,8 +171,49 @@ class Branding
         add_action('wp_head',                    [$this, 'maybePrintAdminBarLogoCss'], 100);
     }
 
+    /** Canonical plugin path the connector ships under. Used by
+     *  the connector-identity match in Pass 2 below. */
+    private const CONNECTOR_CANONICAL_PATH = 'deckwp-connect/deckwp-connect.php';
+
+    /** Basename match used by Pass 2 to spot non-canonical copies
+     *  of the connector (e.g. `deckwp-connect-main/deckwp-connect.php`
+     *  from a stray GitHub source-archive upload). */
+    private const CONNECTOR_BASENAME = 'deckwp-connect.php';
+
     /**
      * Rewrite plugin metadata + drop hidden entries.
+     *
+     * Two passes:
+     *
+     *   1. Exact-path overrides. The dashboard's whitelabel UI sends
+     *      `plugins.{canonical_path}` shaped overrides; this pass
+     *      walks every entry on disk and applies the override when
+     *      its key matches exactly. This is the v0.21.0+ canonical
+     *      behavior — works for every rebrand scenario where the
+     *      operator's WP-on-disk path matches what the dashboard
+     *      thinks it is.
+     *
+     *   2. Connector-identity-by-basename. Some operators end up with
+     *      a non-canonical copy of the connector on disk (typical:
+     *      they uploaded `deckwp-connect-main.zip` from GitHub's
+     *      source archive without renaming, and the canonical
+     *      `deckwp-connect/` got installed alongside via Auto-pair).
+     *      Both copies report `Plugin Name: DeckWP Connect` in their
+     *      header and both render in plugins.php — but the dashboard
+     *      only knows the canonical path, so without this pass the
+     *      stale copy leaks the upstream brand even when the rebrand
+     *      is configured.
+     *
+     *      Pass 2 takes the override entry that was sent for
+     *      `deckwp-connect/deckwp-connect.php` (if any) and ALSO
+     *      applies it to any other plugin on disk whose basename is
+     *      `deckwp-connect.php`. False-positive risk is essentially
+     *      zero — no third party ships a plugin file named
+     *      `deckwp-connect.php`.
+     *
+     *      Pass 2 skips entries that already had their own override
+     *      handled by Pass 1 (so unrelated plugins explicitly
+     *      rebranded by the operator don't get double-rewritten).
      *
      * @param  array<string, array<string, string>> $plugins
      * @return array<string, array<string, string>>
@@ -171,40 +229,78 @@ class Branding
             return $plugins;
         }
 
-        foreach ($plugins as $path => $data) {
+        // Pass 1: exact-path matches.
+        foreach (array_keys($plugins) as $path) {
             if (! isset($overrides[$path]) || ! is_array($overrides[$path])) {
                 continue;
             }
-            $o = $overrides[$path];
+            $plugins = $this->applyOverrideToPlugin($plugins, $path, $overrides[$path]);
+        }
 
-            if (! empty($o['hide'])) {
-                unset($plugins[$path]);
-                continue;
+        // Pass 2: connector-identity match by basename.
+        $connectorOverride = $overrides[self::CONNECTOR_CANONICAL_PATH] ?? null;
+        if (is_array($connectorOverride)) {
+            foreach (array_keys($plugins) as $path) {
+                // Already handled by Pass 1 (canonical hit or unrelated
+                // operator-configured override for this path).
+                if (isset($overrides[$path])) {
+                    continue;
+                }
+                // Match the connector's filename regardless of folder.
+                if (basename((string) $path) !== self::CONNECTOR_BASENAME) {
+                    continue;
+                }
+                $plugins = $this->applyOverrideToPlugin($plugins, $path, $connectorOverride);
             }
+        }
 
-            if (! is_array($plugins[$path])) {
-                // Defensive — some pathological filter upstream might
-                // have replaced the entry with a non-array. Skip.
-                continue;
-            }
+        return $plugins;
+    }
 
-            if (isset($o['name']) && is_string($o['name'])) {
-                $plugins[$path]['Name']  = $o['name'];
-                $plugins[$path]['Title'] = $o['name'];
-            }
-            if (isset($o['description']) && is_string($o['description'])) {
-                $plugins[$path]['Description'] = $o['description'];
-            }
-            if (isset($o['author']) && is_string($o['author'])) {
-                $plugins[$path]['Author']     = $o['author'];
-                $plugins[$path]['AuthorName'] = $o['author'];
-            }
-            if (isset($o['author_uri']) && is_string($o['author_uri'])) {
-                $plugins[$path]['AuthorURI'] = $o['author_uri'];
-            }
-            if (isset($o['plugin_uri']) && is_string($o['plugin_uri'])) {
-                $plugins[$path]['PluginURI'] = $o['plugin_uri'];
-            }
+    /**
+     * Apply a single override entry to a single plugin row. Returns
+     * the (possibly mutated) `$plugins` array — `hide: true` removes
+     * the entry, every other key rewrites the corresponding WP
+     * plugin-header field in place.
+     *
+     * Extracted from `filterAllPlugins` so Pass 1 (exact-path) and
+     * Pass 2 (connector-by-basename) share the rewrite implementation
+     * without copy-pasting it.
+     *
+     * @param  array<string, array<string, string>> $plugins
+     * @param  string                                $path
+     * @param  array<string, mixed>                  $o
+     * @return array<string, array<string, string>>
+     */
+    private function applyOverrideToPlugin(array $plugins, string $path, array $o): array
+    {
+        if (! empty($o['hide'])) {
+            unset($plugins[$path]);
+            return $plugins;
+        }
+
+        if (! is_array($plugins[$path] ?? null)) {
+            // Defensive — some pathological filter upstream might
+            // have replaced the entry with a non-array. Skip.
+            return $plugins;
+        }
+
+        if (isset($o['name']) && is_string($o['name'])) {
+            $plugins[$path]['Name']  = $o['name'];
+            $plugins[$path]['Title'] = $o['name'];
+        }
+        if (isset($o['description']) && is_string($o['description'])) {
+            $plugins[$path]['Description'] = $o['description'];
+        }
+        if (isset($o['author']) && is_string($o['author'])) {
+            $plugins[$path]['Author']     = $o['author'];
+            $plugins[$path]['AuthorName'] = $o['author'];
+        }
+        if (isset($o['author_uri']) && is_string($o['author_uri'])) {
+            $plugins[$path]['AuthorURI'] = $o['author_uri'];
+        }
+        if (isset($o['plugin_uri']) && is_string($o['plugin_uri'])) {
+            $plugins[$path]['PluginURI'] = $o['plugin_uri'];
         }
 
         return $plugins;
