@@ -148,6 +148,23 @@ class Branding
         // CSS is silent when the operator hasn't opted in.
         add_action('admin_print_styles-plugins.php', [$this, 'maybePrintSuppressActivateCss'], 100);
 
+        // `gettext` covers every WP surface that displays the
+        // connector's plugin header fields (Name, Description, Author)
+        // OUTSIDE wp-admin/plugins.php. The `all_plugins` filter above
+        // is misleadingly named — WP only applies it from
+        // plugins.php's list table render, NOT from `get_plugins()`
+        // directly. So update-core.php, the Plugins / Updates badge
+        // count, third-party "site health" plugins that scan
+        // get_plugins(), and our own PluginInventory all bypass the
+        // all_plugins filter and see the raw header strings.
+        // `_get_plugin_data_markup_translate` runs `translate()` over
+        // Name + Description + Author + URIs with the plugin's
+        // textdomain — hooking gettext lets us catch those calls and
+        // substitute the operator's rebrand. The handler self-scopes
+        // to the `deckwp-connect` textdomain to avoid touching
+        // strings emitted by other plugins.
+        add_filter('gettext', [$this, 'translateConnectorHeaders'], 10, 3);
+
         // `custom_login` — three hooks coordinate the rebrand on the
         // wp-login.php screen:
         //   - login_enqueue_scripts: prints the inline CSS overriding
@@ -426,6 +443,93 @@ class Branding
             . '.wrap > .notice.updated.notice-success,'
             . '.wrap > .notice-success.is-dismissible{display:none!important;}'
             . '</style>';
+    }
+
+    /**
+     * Rewrite the connector's plugin-header strings (Name,
+     * Description, Author) as they pass through WP's translation
+     * layer. v0.28.0 — closes the surfaces the `all_plugins` filter
+     * doesn't reach.
+     *
+     * ## What this fixes
+     *
+     * Before this filter, the wp-admin Updates page (update-core.php)
+     * still showed "DeckWP Connect / Connects this WordPress site
+     * to your DeckWP dashboard / By DeckWP" even when the operator
+     * had a populated whitelabel config. Reason: WP applies the
+     * `all_plugins` filter ONLY from wp-admin/plugins.php's list
+     * table — every other consumer of `get_plugins()` (update
+     * scanner, third-party diagnostics, our own PluginInventory in
+     * the heartbeat) gets the raw headers parsed from the .php
+     * file. Same root cause as the
+     * "name in the heartbeat payload is wrong" symptom that was
+     * reported in operator testing.
+     *
+     * ## Why gettext
+     *
+     * `_get_plugin_data_markup_translate()` runs `translate()` over
+     * the Name / Description / Author / *URI fields when assembling
+     * the plugin-data array. `translate()` fires the `gettext`
+     * filter. So intercepting `gettext` for `$domain ===
+     * 'deckwp-connect'` catches every consumer of get_plugins()
+     * indirectly — no need to hook each WP surface individually.
+     *
+     * ## Scope
+     *
+     * Strictly self-scoped to the connector's own textdomain. Other
+     * plugins' `__()`/`_e()` calls go through untouched even when
+     * the source text happens to match — we check the `$domain`
+     * argument first.
+     *
+     * @param  string  $translation  The translated text (or original if not translated).
+     * @param  string  $text         The original source string.
+     * @param  string  $domain       Text domain. We only act on 'deckwp-connect'.
+     * @return string
+     */
+    public function translateConnectorHeaders($translation, $text, $domain)
+    {
+        // Only intercept our own textdomain. Other plugins' strings
+        // pass through unchanged, even if they accidentally contain
+        // the same source text — the domain check prevents collateral.
+        if ($domain !== 'deckwp-connect') {
+            return $translation;
+        }
+
+        $overrides = $this->getPluginOverrides();
+        $ownPath = defined('DECKWP_CONNECT_BASENAME') ? DECKWP_CONNECT_BASENAME : '';
+        if ($ownPath === '' || ! isset($overrides[$ownPath]) || ! is_array($overrides[$ownPath])) {
+            return $translation;
+        }
+        $o = $overrides[$ownPath];
+
+        // Name match — the exact string from the plugin header's
+        // `* Plugin Name: DeckWP Connect`.
+        if ($text === 'DeckWP Connect') {
+            if (isset($o['name']) && is_string($o['name']) && $o['name'] !== '') {
+                return $o['name'];
+            }
+        }
+
+        // Author match — `* Author: DeckWP`.
+        if ($text === 'DeckWP') {
+            if (isset($o['author']) && is_string($o['author']) && $o['author'] !== '') {
+                return $o['author'];
+            }
+        }
+
+        // Description match — the exact `* Description:` line from
+        // deckwp-connect.php. Kept inline as a literal so the swap
+        // is unambiguous (vs. fuzzy substring matching that could
+        // accidentally affect operator-translation strings in
+        // other languages). If the source description ever
+        // changes upstream, this match needs to be updated.
+        if ($text === 'Connects this WordPress site to your DeckWP dashboard for one-click bulk updates, scan + auto-fix, automatic backup & rollback, SSO login, and remote management.') {
+            if (isset($o['description']) && is_string($o['description']) && $o['description'] !== '') {
+                return $o['description'];
+            }
+        }
+
+        return $translation;
     }
 
     /**

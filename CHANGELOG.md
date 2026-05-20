@@ -4,6 +4,55 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.28.0] — 2026-05-20
+
+### Fixed
+
+- Whitelabel rebrand now applies on `wp-admin/update-core.php`
+  (the "WordPress Updates" page that lists available plugin
+  updates), the heartbeat's PluginInventory payload, and any
+  third-party diagnostic that calls `get_plugins()` directly.
+
+  Symptom before this release: operator with `pluginName =
+  "PLUGIN TESTE"` configured saw "DeckWP Connect" listed under
+  the available updates on update-core.php, even though
+  wp-admin/plugins.php correctly showed "PLUGIN TESTE".
+
+  Root cause: `all_plugins` is a *misleadingly named* WP filter
+  — core only applies it from `wp-admin/plugins.php`'s list
+  table render, NOT from `get_plugins()` directly. Every other
+  consumer of `get_plugins()` (the update scanner, the
+  heartbeat's PluginInventory, third-party site-health
+  diagnostics) gets the raw plugin-header strings parsed from
+  the .php file with no filter wrapping.
+
+  Fix: `Branding::translateConnectorHeaders()` hooks the
+  `gettext` filter scoped to the `deckwp-connect` textdomain.
+  WP's `_get_plugin_data_markup_translate()` runs
+  `translate()` over Name + Description + Author / *URI fields
+  when assembling the plugin-data array — by intercepting at
+  the translate layer we catch every downstream get_plugins()
+  consumer without hooking each WP surface individually.
+
+  Self-scoped: the `$domain === 'deckwp-connect'` check makes
+  other plugins' `__()`/`_e()` calls pass through untouched
+  even if their source text happens to match.
+
+  Now matches:
+  - `Plugin Name: DeckWP Connect` → operator's `pluginName`
+  - `Author: DeckWP` → operator's `author`
+  - `Description: Connects this WordPress site to your DeckWP
+    dashboard...` → operator's `description`
+
+  Description match is the literal source string from the
+  plugin header. If the source description ever changes
+  upstream the match needs to be updated.
+
+### Wire contract change
+
+None. Pure render-layer fix reading the existing
+`deckwp_whitelabel_config` site option.
+
 ## [0.27.0] — 2026-05-20
 
 ### Fixed
