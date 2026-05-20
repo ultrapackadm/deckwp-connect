@@ -4,6 +4,43 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.27.0] — 2026-05-20
+
+### Fixed
+
+- The on-demand `POST /wp-json/deckwp/v1/inventory` route now
+  includes the `themes[]` collection alongside `plugins[]` in
+  the response payload, matching the scheduled Heartbeat's
+  payload shape. Without this key the dashboard's "Refresh"
+  button silently kept stale theme `is_active` flags (and
+  stale theme rows when the operator deleted a theme via
+  wp-admin) until the next 5-min heartbeat tick caught up.
+
+  Repro: switch the active theme via wp-admin → click
+  "Refresh" on the dashboard's Themes tab → notice the
+  previously-active row is still marked Active. The new
+  active theme isn't reflected until the scheduled
+  heartbeat ticks.
+
+  Fix is one line in `InventoryRoute::handle()` — call the
+  same `ThemeInventory->collect()` the Heartbeat
+  `Scheduler::buildPayload()` already calls. The
+  dashboard's `HeartbeatProcessor::process` already handles
+  the themes key correctly (distinguishes "key absent" from
+  "key present but empty"), so no dashboard-side change is
+  needed. Pre-v0.27 connectors continue to omit the key,
+  and the dashboard continues to leave themes alone on
+  those Refresh calls — purely additive on the wire.
+
+### Wire contract change
+
+Purely additive. Pre-v0.27 dashboards ignore the new key
+(they only read `plugins` from the inventory response);
+pre-v0.27 connectors continue to omit the key entirely. The
+dashboard-side fix is implicit — `HeartbeatProcessor` was
+already wired to consume `themes` from any payload shape, it
+just never saw it from `/inventory` before this release.
+
 ## [0.26.0] — 2026-05-20
 
 ### Added

@@ -5,6 +5,7 @@ namespace DeckWP\Connect\REST\Routes;
 defined('ABSPATH') || exit;
 
 use DeckWP\Connect\Inventory\PluginInventory;
+use DeckWP\Connect\Inventory\ThemeInventory;
 use WP_REST_Request;
 use WP_REST_Response;
 
@@ -49,9 +50,15 @@ class InventoryRoute
     /** @var PluginInventory */
     private $inventory;
 
-    public function __construct(PluginInventory $inventory = null)
-    {
+    /** @var ThemeInventory */
+    private $themeInventory;
+
+    public function __construct(
+        PluginInventory $inventory = null,
+        ThemeInventory $themeInventory = null
+    ) {
         $this->inventory = $inventory ?? new PluginInventory();
+        $this->themeInventory = $themeInventory ?? new ThemeInventory();
     }
 
     /**
@@ -83,6 +90,17 @@ class InventoryRoute
             'site_url'          => function_exists('get_site_url') ? (string) get_site_url() : '',
             'is_multisite'      => function_exists('is_multisite') && is_multisite(),
             'plugins'           => $this->inventory->collect(),
+            // Theme inventory parity with the scheduled Heartbeat
+            // payload — without this key the dashboard's "Refresh"
+            // button silently keeps stale theme is_active flags
+            // (and stale theme rows when the operator deletes a
+            // theme via wp-admin) until the next 5-min heartbeat
+            // tick catches up. HeartbeatProcessor::process
+            // distinguishes "key absent" (pre-v0.27 connector,
+            // skip theme sync) from "key present but empty" (site
+            // genuinely has zero themes), so adding the key here
+            // makes Refresh actually refresh themes.
+            'themes'            => $this->themeInventory->collect(),
         ];
 
         return new WP_REST_Response($payload, 200);
