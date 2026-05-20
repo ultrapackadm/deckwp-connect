@@ -87,6 +87,89 @@ NOT used. We distribute via:
 3. **Self-update** via DeckWP API (`/api/v1/connector/latest` returns
    download_url for the connector ZIP)
 
+All three channels resolve to the same artifact: the
+`deckwp-connect.zip` asset attached to the latest GitHub Release.
+
+## Release ritual
+
+Releases are **fully automated** by `.github/workflows/release.yml`.
+The dev's responsibility is the three-step prep; CI does the
+packaging, validation, and publishing.
+
+### Dev steps (manual)
+
+1. **Bump version** in both places in `deckwp-connect.php`:
+   - The plugin header line: `* Version:           X.Y.Z`
+   - The `define('DECKWP_CONNECT_VERSION', 'X.Y.Z')` near the top
+   The release workflow validates these match the tag — a typo here
+   blocks the release before it publishes.
+2. **Add a CHANGELOG entry** at the top of `CHANGELOG.md` under
+   `## [X.Y.Z] — YYYY-MM-DD`. The workflow extracts this section
+   verbatim into the GitHub Release body, so write it for the
+   customer (not internal commit-message style).
+3. **Commit, tag, push:**
+   ```bash
+   git add deckwp-connect.php CHANGELOG.md src/...
+   git commit -m "feat(...): your message"
+   git tag -a vX.Y.Z -m "vX.Y.Z — one-line summary"
+   git push origin main --follow-tags
+   ```
+
+### CI steps (automatic on tag push)
+
+The `release.yml` workflow fires on every `v*` tag push and:
+
+1. Checks out the repo at the tagged commit
+2. Runs `php -l` on every PHP file (entrypoint + `src/`) — a parse
+   error blocks the release
+3. Verifies the tag version matches `* Version:` AND
+   `DECKWP_CONNECT_VERSION` in `deckwp-connect.php` — a mismatch
+   blocks the release
+4. Builds `deckwp-connect.zip` via
+   `git archive --format=zip --prefix=deckwp-connect/`
+   — the `.gitattributes` `export-ignore` rules strip
+   `CLAUDE.md`, `tests/`, `composer.json`, `.github/` etc. from
+   the customer-facing ZIP
+5. Sanity-checks that the ZIP contains `deckwp-connect/deckwp-connect.php`
+   at the expected path (defends against an `.gitattributes`
+   refactor accidentally stripping the entrypoint)
+6. Extracts the `## [X.Y.Z]` section from `CHANGELOG.md` via `awk`
+   for the release body
+7. Publishes the GitHub Release with the ZIP attached as
+   `deckwp-connect.zip`
+
+If the release already exists when the workflow fires (e.g. you ran
+`gh release create` locally before pushing the tag, or you're
+re-running the workflow via `workflow_dispatch`), the workflow
+uploads the asset to the existing release with `--clobber` instead
+of failing. This keeps the flow robust to mixed manual/CI usage.
+
+### Why this is automated now
+
+Releases v0.19.0–v0.24.1 (May 2026) shipped without the ZIP asset
+because the manual `gh release upload` step was forgotten on every
+release. The dashboard's `ConnectorReleaseFetcher` returned `null`
+for `download_url`, breaking the Auto-pair flow with
+"Could not resolve the latest deckwp-connect release from GitHub."
+
+v0.24.1 was patched by manually rebuilding + uploading the ZIP via
+PowerShell + `gh release upload --clobber`. The CI workflow exists
+so this can't happen again — the release literally cannot be
+published without the ZIP, because publishing IS attaching the ZIP.
+
+### Manual fallback (workflow_dispatch)
+
+If a release already exists but is missing the asset (e.g.
+historical releases pre-CI), trigger the workflow manually:
+
+1. GitHub UI → Actions → "Release" → "Run workflow"
+2. Enter the tag (e.g. `v0.21.0`)
+3. CI checks out at that tag, rebuilds the ZIP, and uploads with
+   `--clobber` to the existing release
+
+The same path can be used to re-build a ZIP if `.gitattributes` is
+ever changed and an old release needs a clean rebuild.
+
 ## What this plugin does NOT do
 
 - It does NOT host or distribute plugins/themes (that's UltraPack's job

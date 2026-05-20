@@ -1,0 +1,202 @@
+# Build + publish the connector ZIP asset on every tagged release.
+#
+# ## Why this exists
+#
+# The dashboard's `ConnectorReleaseFetcher` resolves the connector
+# download URL by hitting `GET /repos/.../releases/latest` and reading
+# the first `.zip` asset. Without an asset attached to the release,
+# the auto-pair flow fails with "Could not resolve the latest
+# deckwp-connect release from GitHub" — which is exactly what bit us
+# on v0.19.0–v0.24.1 (asset upload was a manual step in the release
+# ritual, and got forgotten on every release after v0.18.0).
+#
+# This workflow makes the asset-attached release the only kind that
+# can exist. The ritual is now: bump version, update CHANGELOG, tag,
+# push the tag. CI does the rest.
+#
+# ## Trigger
+#
+# Tag push matching `v*` (`v0.24.2`, `v1.0.0`, etc.). Tags pushed
+# alongside main via `git push --follow-tags` work fine.
+#
+# Manual `workflow_dispatch` is wired too, primarily for re-building
+# an asset on a release that's already published (e.g. v0.24.1 was
+# published without an asset; if we ever want to backfill it via the
+# UI we can fire the workflow against that tag).
+#
+# ## Failure modes
+#
+#   - Version mismatch: tag `v0.25.0` vs plugin header `Version: 0.24.1`
+#     means the developer forgot to bump the file. The "Verify version
+#     sync" step catches this and fails the build before publishing
+#     a bad release.
+#   - PHP parse error: `php -l` on every src/ file + the entrypoint.
+#     A typo that slips past local linting blocks the release.
+#   - Empty CHANGELOG section: the awk extractor falls back to a
+#     placeholder ("See CHANGELOG.md") so the release still publishes
+#     — but logs a warning so the dev notices and updates the
+#     CHANGELOG retroactively.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.25.0). Must already exist.'
+        required: true
+
+permissions:
+  contents: write  # required for `gh release create`
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Resolve target ref
+        id: ref
+        run: |
+          # workflow_dispatch passes the tag via input; tag-push uses
+          # GITHUB_REF_NAME. Normalize to one variable so the rest of
+          # the workflow doesn't care which trigger fired it.
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG (version $VERSION)"
+
+      - name: Checkout at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '7.4'  # connector's compatibility floor
+          coverage: none
+          tools: none
+
+      - name: PHP syntax check
+        run: |
+          # Lint the entrypoint + every src/ file. A parse error here
+          # blocks the release before we touch the GitHub Release API.
+          find src deckwp-connect.php -name "*.php" -print0 \
+            | xargs -0 -n1 -P 4 php -l
+          echo "PHP syntax OK"
+
+      - name: Verify version sync
+        run: |
+          TAG_VER="${{ steps.ref.outputs.version }}"
+
+          # The plugin file carries the version in two places:
+          # the WP plugin header (` * Version: X.Y.Z`) and the
+          # DECKWP_CONNECT_VERSION define. Both must match the tag,
+          # otherwise the connector self-updater would compare against
+          # the wrong source-of-truth.
+          # Header line:  ` * Version:           X.Y.Z`
+          HEADER_VER=$(awk '/^[[:space:]]*\*[[:space:]]*Version:/{print $NF}' deckwp-connect.php)
+          # Define line:  `define('DECKWP_CONNECT_VERSION',  'X.Y.Z');`
+          # The regex anchors on `define(` so the duplicate-load guard
+          # line (`if (defined('DECKWP_CONNECT_VERSION')) {`) — which
+          # also contains the constant name — doesn't match.
+          DEFINE_VER=$(awk -F"'" '/define\(.DECKWP_CONNECT_VERSION/{print $4}' deckwp-connect.php)
+
+          if [ "$HEADER_VER" != "$TAG_VER" ]; then
+            echo "::error::Plugin header Version='$HEADER_VER' does not match tag '$TAG_VER'"
+            exit 1
+          fi
+          if [ "$DEFINE_VER" != "$TAG_VER" ]; then
+            echo "::error::DECKWP_CONNECT_VERSION='$DEFINE_VER' does not match tag '$TAG_VER'"
+            exit 1
+          fi
+          echo "Version sync OK: $TAG_VER matches both plugin header + define"
+
+      - name: Build release ZIP
+        run: |
+          # git archive respects .gitattributes export-ignore rules.
+          # The tag's exact tree state is what gets exported — no
+          # working-directory drift can sneak into the ZIP.
+          #
+          # --prefix ensures the ZIP unpacks into deckwp-connect/
+          # (the canonical plugin folder name) regardless of how
+          # GitHub names its auto-generated source archives.
+          git archive \
+            --format=zip \
+            --prefix=deckwp-connect/ \
+            -o deckwp-connect.zip \
+            "${{ steps.ref.outputs.tag }}"
+
+          echo "ZIP size: $(stat -c%s deckwp-connect.zip 2>/dev/null || stat -f%z deckwp-connect.zip) bytes"
+          echo "First 20 entries:"
+          unzip -l deckwp-connect.zip | head -25
+
+          # Sanity: ZIP must contain the entrypoint at the expected path.
+          # If .gitattributes accidentally strips it (or a refactor moved
+          # it), block the release. A ZIP without an entrypoint is the
+          # nightmare scenario — the customer installs but the plugin
+          # never loads.
+          if ! unzip -l deckwp-connect.zip | grep -q "deckwp-connect/deckwp-connect.php"; then
+            echo "::error::ZIP does not contain deckwp-connect/deckwp-connect.php — refusing to publish"
+            exit 1
+          fi
+
+      - name: Extract changelog section
+        id: notes
+        run: |
+          # Pull the [VERSION] section from CHANGELOG.md. The awk:
+          # turn on printing when we hit the section header, turn it off
+          # when we hit the NEXT section header (which marks the start
+          # of the previous version's entry).
+          VERSION="${{ steps.ref.outputs.version }}"
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { p=1; next }
+            p && /^## \[/ { exit }
+            p { print }
+          ' CHANGELOG.md > release-notes.md
+
+          if [ ! -s release-notes.md ]; then
+            echo "::warning::CHANGELOG.md has no section for [$VERSION] — using fallback notes"
+            printf '%s\n' \
+              "Release $VERSION." \
+              "" \
+              "See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ steps.ref.outputs.tag }}/CHANGELOG.md) for details." \
+              > release-notes.md
+          fi
+
+          # Strip leading blank lines for a tidy release page header.
+          sed -i '/./,$!d' release-notes.md
+
+          echo "--- Release notes preview ---"
+          head -20 release-notes.md
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.ref.outputs.tag }}"
+
+          # If the release already exists (e.g. workflow_dispatch
+          # re-run, or the developer ran `gh release create` locally
+          # before pushing the tag), upload the asset to the existing
+          # release instead of failing. `--clobber` replaces an
+          # existing asset of the same name.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — uploading asset only"
+            gh release upload "$TAG" deckwp-connect.zip --clobber
+          else
+            echo "Creating new release $TAG"
+            gh release create "$TAG" \
+              deckwp-connect.zip \
+              --title "$TAG" \
+              --notes-file release-notes.md
+          fi

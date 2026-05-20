@@ -1,0 +1,37 @@
+# Files excluded from `git archive` (release ZIP builds).
+#
+# The `.github/workflows/release.yml` workflow runs
+# `git archive --format=zip --prefix=deckwp-connect/ ...` to build the
+# customer-facing connector ZIP that gets uploaded as an asset on every
+# tagged GitHub Release. The dashboard's `ConnectorReleaseFetcher`
+# downloads this asset for the Auto-pair flow, and end-customers can
+# also download it directly from the GitHub Releases page.
+#
+# Anything listed below stays in the repo (developers + CI need them)
+# but does NOT end up in the customer ZIP. Keep this list tight —
+# every entry must be a file customers don't need, since stripping
+# something they DO need silently breaks installations.
+
+# Internal developer documentation. The CLAUDE.md file is the project's
+# internal conventions index — references "agency rebrand workflows" and
+# "DeckWP architecture" that a customer doesn't need to see, and that
+# could confuse a non-technical operator who unpacks the ZIP.
+/CLAUDE.md            export-ignore
+
+# Test suite. Customers don't run our PHPUnit tests; the tests/
+# directory is dev-only. Stripping it also keeps the connector ZIP
+# small (matters for the dashboard's auto-install bandwidth budget).
+/tests                export-ignore
+
+# Build / CI metadata.
+/.github              export-ignore
+/.gitattributes       export-ignore
+/.gitignore           export-ignore
+
+# Composer dev tooling. The connector has zero production runtime
+# dependencies (the fallback autoloader in deckwp-connect.php covers
+# the PSR-4 mapping), so customers don't need composer.json. Keeping
+# it in the repo for dev convenience but stripping from releases.
+# Same for any lockfile if one ever lands.
+/composer.json        export-ignore
+/composer.lock        export-ignore
