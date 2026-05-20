@@ -4,6 +4,46 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.30.0] — 2026-05-20
+
+### Fixed
+
+- `SiteHealth\Runner` now pre-loads the `wp-admin/includes/`
+  utility files that `WP_Site_Health` test methods depend on.
+  Without this, REST-request context (no auto-load of admin
+  files) caused 5+ checks to throw `Call to undefined
+  function get_core_updates()` / `get_plugin_updates()` /
+  `get_theme_updates()` / `wp_check_php_version()`, which the
+  Runner's per-test try/catch swallowed and surfaced as
+  status=error rows on the dashboard's Health tab.
+
+  Confirmed in prod by an operator running the first manual
+  snapshot on wptestes (Health tab showed 5 ERROR rows for
+  "WordPress Version", "Plugin Versions", "Theme Versions",
+  "PHP Version", etc.).
+
+  Loaded up-front (each `require_once` is idempotent + cheap):
+  - `wp-admin/includes/update.php` — core/plugin/theme update
+    lookups
+  - `wp-admin/includes/misc.php` — `wp_check_php_version`
+  - `wp-admin/includes/plugin.php` — `get_plugins`,
+    `get_mu_plugins`, `is_plugin_active`
+  - `wp-admin/includes/theme.php` — theme metadata
+  - `wp-admin/includes/file.php` — `WP_Filesystem` for tests
+    that probe disk
+  - `wp-admin/includes/class-wp-debug-data.php` — used by the
+    Site Health debug-info test
+
+  All wrapped in `is_readable()` checks so a future WP version
+  that reorganizes any of these doesn't break the connector.
+
+### Wire contract change
+
+None. Pure server-side fix; the response shape is unchanged.
+Pre-existing error rows on prior runs stay as-is — only NEW
+runs (manual click or hourly cron tick) on v0.30.0+ get the
+full classification.
+
 ## [0.29.0] — 2026-05-20
 
 ### Added

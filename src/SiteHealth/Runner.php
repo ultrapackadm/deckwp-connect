@@ -81,8 +81,37 @@ class Runner
      */
     public function run(): array
     {
+        // Load WP_Site_Health itself.
         if (! class_exists('WP_Site_Health')) {
             require_once ABSPATH . 'wp-admin/includes/class-wp-site-health.php';
+        }
+
+        // WP_Site_Health's individual test methods call into utility
+        // functions that live in wp-admin/includes/ — `get_core_updates`,
+        // `get_plugin_updates`, `get_theme_updates`, `wp_check_php_version`,
+        // `get_mu_plugins`, etc. Those files aren't auto-loaded on
+        // REST requests (which is what we're in here), so without
+        // these requires the test methods throw "Call to undefined
+        // function" — surfacing as status=error rows on the dashboard's
+        // Health tab. Loading them up-front turns those rows into
+        // proper good/recommended/critical classifications.
+        //
+        // Each require_once is idempotent + cheap (file_exists check
+        // happens inside WP's own loader). Listed in the order they
+        // appear in WP_Site_Health's call graph so the next failing
+        // test surfaced by operator testing slots in naturally.
+        foreach ([
+            'wp-admin/includes/update.php',         // get_core_updates, get_plugin_updates, get_theme_updates
+            'wp-admin/includes/misc.php',           // wp_check_php_version
+            'wp-admin/includes/plugin.php',         // get_plugins, get_mu_plugins, is_plugin_active
+            'wp-admin/includes/theme.php',          // wp_get_themes deps
+            'wp-admin/includes/file.php',           // WP_Filesystem for some tests
+            'wp-admin/includes/class-wp-debug-data.php', // background data class used by debug-info test
+        ] as $relativePath) {
+            $fullPath = ABSPATH . $relativePath;
+            if (is_readable($fullPath)) {
+                require_once $fullPath;
+            }
         }
 
         $siteHealth = \WP_Site_Health::get_instance();
