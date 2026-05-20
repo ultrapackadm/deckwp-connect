@@ -4,6 +4,70 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.29.0] — 2026-05-20
+
+### Added
+
+- `POST /wp-json/deckwp/v1/site-health` — new REST route that
+  runs every registered `WP_Site_Health` test (core + plugin-
+  registered via the `site_status_tests` filter) and returns a
+  flat envelope the dashboard's HealthRun model can store.
+
+  Body: empty `{}`.
+
+  Response 200 (truncated):
+
+  ```json
+  {
+    "sent_at": 1717684800,
+    "wp_version": "6.9.4",
+    "php_version": "8.3.10",
+    "summary": { "good": 14, "recommended": 3, "critical": 1, "error": 0 },
+    "checks": [
+      {
+        "test": "wordpress_version",
+        "category": "direct",
+        "label": "Your version of WordPress is up to date",
+        "status": "good",
+        "badge_label": "Performance",
+        "badge_color": "blue",
+        "description": "You are currently running...",
+        "actions": ""
+      },
+      ...
+    ]
+  }
+  ```
+
+  Implementation lives in `SiteHealth\Runner` — instantiates the
+  WP_Site_Health singleton, walks both the `direct` and `async`
+  test buckets returned by `get_tests()`, and invokes each via
+  the `get_test_<key>` convention on the singleton. Async tests
+  whose backing method isn't on the singleton (plugin-registered
+  asyncs with custom REST callbacks) are silently skipped — we
+  can't safely replay arbitrary plugin REST routes from here.
+
+  Per-test try/catch isolates failures; a broken test surfaces as
+  `status: 'error'` rather than aborting the snapshot. HTML in the
+  WP_Site_Health `description` + `actions` fields is stripped via
+  `wp_strip_all_tags` — the dashboard renders plain text, and
+  shipping arbitrary HTML over the wire only to escape it
+  client-side is wasted bandwidth + an XSS landmine.
+
+  HMAC-verified by `HmacVerifier`. Sets `set_time_limit(60)` at
+  request entry — Site Health includes network-dependent tests
+  (loopback, dotorg communication, REST API availability) that
+  can each take 5-10s; worst-case sequential cost is ~30-45s on
+  a healthy install. The 60s ceiling matches the dashboard's
+  outbound HTTP timeout for this trigger.
+
+### Wire contract change
+
+Purely additive. Pre-v0.29.0 connectors 404 the new endpoint; the
+dashboard's `RemoteSiteHealthTrigger` (companion commit on the
+dashboard repo) surfaces that as an operator-facing
+"connector too old — update to v0.29.0+" message.
+
 ## [0.28.0] — 2026-05-20
 
 ### Fixed
