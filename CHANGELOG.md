@@ -4,7 +4,45 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
-## [0.30.0] — 2026-05-20
+## [0.31.0] — 2026-05-20
+
+### Added
+
+- **Database Optimize subsystem** — new `src/DbOptimize/` package
+  with three REST routes powering the dashboard's
+  `/sites/{site}/db-optimize` tab.
+
+  Routes (all HMAC-protected):
+
+  - `POST /wp-json/deckwp/v1/db-scan` — read-only snapshot. Returns
+    the install's table inventory (name / engine / row count /
+    data + index size / overhead bytes via `Data_free`) plus the
+    seven well-known cleanup-target counts: post revisions, spam
+    comments, auto-drafts >7 days old, trashed posts + comments,
+    expired transients, orphaned postmeta, pingbacks/trackbacks.
+    Filtered to the WP table prefix so a shared DB hosting multiple
+    apps doesn't bleed unrelated tables into the snapshot.
+
+  - `POST /wp-json/deckwp/v1/db-cleanup` — body `{categories: [...]}`.
+    Executes DELETEs for the operator-selected cleanup categories.
+    Per-category try/catch isolates failures (one broken category
+    doesn't abort the sweep). Each category's matching `wp_postmeta`
+    / `wp_commentmeta` rows are deleted in the same statement so
+    cleanups don't orphan meta rows.
+
+  - `POST /wp-json/deckwp/v1/db-optimize-tables` — body
+    `{tables: [...]}`. Runs `OPTIMIZE TABLE` against the requested
+    list. Two-layer allowlist defends against SQL injection: each
+    table name must (1) match a row returned by `SHOW TABLES` on
+    the install AND (2) match `^[A-Za-z0-9_]+$`. Reports per-table
+    `reclaimed_bytes` by snapshotting `Data_free` before/after.
+
+  Multisite posture: scoped to the current blog's tables (per-blog,
+  not network-wide). Operators pairing a sub-blog see that blog's
+  bytes; pairing the root blog catches network-wide options /
+  sitemeta transients automatically.
+
+
 
 ### Fixed
 

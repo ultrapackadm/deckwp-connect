@@ -7,6 +7,9 @@ defined('ABSPATH') || exit;
 use DeckWP\Connect\REST\Auth\HmacVerifier;
 use DeckWP\Connect\REST\Routes\BackupCreateRoute;
 use DeckWP\Connect\REST\Routes\BootstrapPairingRoute;
+use DeckWP\Connect\REST\Routes\DbCleanupRoute;
+use DeckWP\Connect\REST\Routes\DbOptimizeTablesRoute;
+use DeckWP\Connect\REST\Routes\DbScanRoute;
 use DeckWP\Connect\REST\Routes\DeleteBackupRoute;
 use DeckWP\Connect\REST\Routes\InstallBatchRoute;
 use DeckWP\Connect\REST\Routes\InventoryRoute;
@@ -93,6 +96,18 @@ use DeckWP\Connect\REST\Routes\WhitelabelRoute;
  *     `WP_Site_Health` check (core + plugin-registered) and return
  *     a flat envelope the dashboard's HealthRun model can store.
  *     {@see SiteHealthRoute}.
+ *   - POST /wp-json/deckwp/v1/db-scan — snapshot the install's DB
+ *     inventory (table list + sizes + overhead) + the seven well-
+ *     known cleanup-target counts (revisions, spam, drafts, trash,
+ *     transients, orphan postmeta, pingbacks). Read-only.
+ *     {@see DbScanRoute}.
+ *   - POST /wp-json/deckwp/v1/db-cleanup — execute the selected
+ *     cleanup categories from the dashboard's checkbox list.
+ *     {@see DbCleanupRoute}.
+ *   - POST /wp-json/deckwp/v1/db-optimize-tables — run
+ *     OPTIMIZE TABLE on the requested table list. Defends against
+ *     SQL injection via a two-layer allowlist (SHOW TABLES + regex).
+ *     {@see DbOptimizeTablesRoute}.
  *   - POST /wp-json/deckwp/v1/bootstrap-pairing — used by the
  *     dashboard's Automatic Pairing flow to push a pairing token
  *     INTO the connector. NOT HMAC-protected (no secret yet by
@@ -160,6 +175,15 @@ class Server
     /** @var SiteHealthRoute */
     private $siteHealthRoute;
 
+    /** @var DbScanRoute */
+    private $dbScanRoute;
+
+    /** @var DbCleanupRoute */
+    private $dbCleanupRoute;
+
+    /** @var DbOptimizeTablesRoute */
+    private $dbOptimizeTablesRoute;
+
     /** @var BootstrapPairingRoute */
     private $bootstrapPairingRoute;
 
@@ -179,23 +203,29 @@ class Server
         ThemeSwitchRoute $themeSwitchRoute = null,
         ThemeDeleteRoute $themeDeleteRoute = null,
         SiteHealthRoute $siteHealthRoute = null,
+        DbScanRoute $dbScanRoute = null,
+        DbCleanupRoute $dbCleanupRoute = null,
+        DbOptimizeTablesRoute $dbOptimizeTablesRoute = null,
         BootstrapPairingRoute $bootstrapPairingRoute = null
     ) {
-        $this->verifier             = $verifier ?? new HmacVerifier();
-        $this->scanRoute            = $scanRoute ?? new ScanRoute();
-        $this->installBatchRoute    = $installBatchRoute ?? new InstallBatchRoute();
-        $this->restoreBackupRoute   = $restoreBackupRoute ?? new RestoreBackupRoute();
-        $this->deleteBackupRoute    = $deleteBackupRoute ?? new DeleteBackupRoute();
-        $this->inventoryRoute       = $inventoryRoute ?? new InventoryRoute();
-        $this->ssoLoginRoute        = $ssoLoginRoute ?? new SsoLoginRoute();
-        $this->maintenanceRoute     = $maintenanceRoute ?? new MaintenanceRoute();
-        $this->backupCreateRoute    = $backupCreateRoute ?? new BackupCreateRoute();
-        $this->setManagedSlugsRoute = $setManagedSlugsRoute ?? new SetManagedSlugsRoute();
-        $this->whitelabelRoute      = $whitelabelRoute ?? new WhitelabelRoute();
-        $this->pluginToggleRoute    = $pluginToggleRoute ?? new PluginToggleRoute();
-        $this->themeSwitchRoute     = $themeSwitchRoute ?? new ThemeSwitchRoute();
-        $this->themeDeleteRoute     = $themeDeleteRoute ?? new ThemeDeleteRoute();
-        $this->siteHealthRoute      = $siteHealthRoute ?? new SiteHealthRoute();
+        $this->verifier              = $verifier ?? new HmacVerifier();
+        $this->scanRoute             = $scanRoute ?? new ScanRoute();
+        $this->installBatchRoute     = $installBatchRoute ?? new InstallBatchRoute();
+        $this->restoreBackupRoute    = $restoreBackupRoute ?? new RestoreBackupRoute();
+        $this->deleteBackupRoute     = $deleteBackupRoute ?? new DeleteBackupRoute();
+        $this->inventoryRoute        = $inventoryRoute ?? new InventoryRoute();
+        $this->ssoLoginRoute         = $ssoLoginRoute ?? new SsoLoginRoute();
+        $this->maintenanceRoute      = $maintenanceRoute ?? new MaintenanceRoute();
+        $this->backupCreateRoute     = $backupCreateRoute ?? new BackupCreateRoute();
+        $this->setManagedSlugsRoute  = $setManagedSlugsRoute ?? new SetManagedSlugsRoute();
+        $this->whitelabelRoute       = $whitelabelRoute ?? new WhitelabelRoute();
+        $this->pluginToggleRoute     = $pluginToggleRoute ?? new PluginToggleRoute();
+        $this->themeSwitchRoute      = $themeSwitchRoute ?? new ThemeSwitchRoute();
+        $this->themeDeleteRoute      = $themeDeleteRoute ?? new ThemeDeleteRoute();
+        $this->siteHealthRoute       = $siteHealthRoute ?? new SiteHealthRoute();
+        $this->dbScanRoute           = $dbScanRoute ?? new DbScanRoute();
+        $this->dbCleanupRoute        = $dbCleanupRoute ?? new DbCleanupRoute();
+        $this->dbOptimizeTablesRoute = $dbOptimizeTablesRoute ?? new DbOptimizeTablesRoute();
         $this->bootstrapPairingRoute = $bootstrapPairingRoute ?? new BootstrapPairingRoute();
     }
 
@@ -302,6 +332,24 @@ class Server
             'deckwp/v1',
             '/site-health',
             $this->siteHealthRoute->args($permissionCallback)
+        );
+
+        register_rest_route(
+            'deckwp/v1',
+            '/db-scan',
+            $this->dbScanRoute->args($permissionCallback)
+        );
+
+        register_rest_route(
+            'deckwp/v1',
+            '/db-cleanup',
+            $this->dbCleanupRoute->args($permissionCallback)
+        );
+
+        register_rest_route(
+            'deckwp/v1',
+            '/db-optimize-tables',
+            $this->dbOptimizeTablesRoute->args($permissionCallback)
         );
 
         // NOTE: bootstrap-pairing does NOT use $permissionCallback
