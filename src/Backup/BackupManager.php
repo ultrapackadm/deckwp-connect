@@ -68,6 +68,14 @@ class BackupManager
     /** Refusal threshold for snapshotting an unusually large plugin. */
     public const MAX_PLUGIN_DIR_BYTES = 500 * 1024 * 1024;
 
+    /**
+     * Refusal threshold for snapshotting a theme. Themes routinely run
+     * larger than plugins (Avada all-in-one ~50 MB; Divi page builder
+     * + library payload ~80 MB). 800 MB headroom keeps the worst real
+     * cases inside the ceiling without becoming a disk-fill vector.
+     */
+    public const MAX_THEME_DIR_BYTES = 800 * 1024 * 1024;
+
     /** Subdirectory name (under wp-content/uploads/) where zips live. */
     public const BACKUPS_DIR_NAME = 'deckwp-backups';
 
@@ -576,6 +584,193 @@ class BackupManager
             return rtrim(WP_CONTENT_DIR, '/\\') . '/plugins';
         }
         return null;
+    }
+
+    /** Path to wp-content/themes/, or null if WP_CONTENT_DIR isn't defined. */
+    private function themesDir(): ?string
+    {
+        if (defined('WP_CONTENT_DIR')) {
+            return rtrim(WP_CONTENT_DIR, '/\\') . '/themes';
+        }
+        return null;
+    }
+
+    /**
+     * Snapshot the theme folder at `wp-content/themes/<slug>/` into a
+     * zip under our managed backups directory.
+     *
+     * Mirror of {@see self::snapshot()} but targets the themes tree.
+     * Themes are always folder-based (no Hello-Dolly equivalent), so
+     * we skip the single-file branch and go straight to zipDirectory.
+     *
+     * Same wire shape on success/failure as snapshot() — same error
+     * codes plus `theme_not_found` / `theme_too_large` instead of the
+     * plugin-specific ones.
+     *
+     * @return array<string, mixed>
+     */
+    public function snapshotTheme(string $slug): array
+    {
+        $slug = $this->sanitizeSlug($slug);
+        if ($slug === null) {
+            return $this->fail('invalid_slug', 'Theme slug failed validation (allowlist regex).');
+        }
+
+        $themesDir = $this->themesDir();
+        if ($themesDir === null) {
+            return $this->fail('themes_dir_unresolved', 'Could not resolve the wp-content/themes/ directory.');
+        }
+
+        $sourceDir = $themesDir . '/' . $slug;
+        if (! is_dir($sourceDir)) {
+            return $this->fail(
+                'theme_not_found',
+                sprintf('Theme "%s" does not exist under wp-content/themes/.', $slug)
+            );
+        }
+
+        // realpath() containment guard — same posture as plugin path.
+        $resolvedSource = realpath($sourceDir);
+        $resolvedThemesDir = realpath($themesDir);
+        if ($resolvedSource === false
+            || $resolvedThemesDir === false
+            || strncmp($resolvedSource, $resolvedThemesDir, strlen($resolvedThemesDir)) !== 0
+        ) {
+            return $this->fail('path_escape', 'Resolved theme path is outside wp-content/themes/.');
+        }
+
+        $sizeBytes = $this->dirSizeBytes($resolvedSource);
+        if ($sizeBytes > self::MAX_THEME_DIR_BYTES) {
+            return $this->fail(
+                'theme_too_large',
+                sprintf(
+                    'Theme is %d bytes — over the %d-byte snapshot ceiling. Refused to avoid filling disk.',
+                    $sizeBytes,
+                    self::MAX_THEME_DIR_BYTES
+                )
+            );
+        }
+
+        $backupDir = $this->ensureBackupsDir();
+        if ($backupDir === null) {
+            return $this->fail('backup_dir_uncreatable', 'Could not create or find the deckwp-backups/ directory inside uploads/.');
+        }
+
+        $targetZip = $backupDir . '/' . $this->buildZipName($slug);
+
+        $zipResult = $this->zipDirectory($resolvedSource, $slug, $targetZip);
+        if (! $zipResult['ok']) {
+            if (file_exists($targetZip)) {
+                @unlink($targetZip);
+            }
+            return $this->fail($zipResult['error_code'], $zipResult['error']);
+        }
+
+        $checksum = @hash_file('sha256', $targetZip);
+        if ($checksum === false) {
+            @unlink($targetZip);
+            return $this->fail('checksum_failed', 'Could not compute SHA-256 of the produced zip — file unreadable.');
+        }
+
+        $size = @filesize($targetZip);
+        if ($size === false || $size === 0) {
+            @unlink($targetZip);
+            return $this->fail('zip_empty', 'Zip ended up empty or unreadable after creation.');
+        }
+
+        return [
+            'ok'             => true,
+            'local_path'     => $this->relativeUploadsPath($targetZip),
+            'absolute_path'  => $targetZip,
+            'checksum'       => $checksum,
+            'size_bytes'     => $size,
+        ];
+    }
+
+    /**
+     * Restore a previously-snapshotted theme zip back over the live
+     * theme folder. Mirror of {@see self::restore()} but targets
+     * wp-content/themes/<slug>/.
+     *
+     * @return array<string, mixed>
+     */
+    public function restoreTheme(string $absoluteZipPath, string $slug, ?string $expectedChecksum = null): array
+    {
+        $slug = $this->sanitizeSlug($slug);
+        if ($slug === null) {
+            return $this->fail('invalid_slug', 'Theme slug failed validation.');
+        }
+
+        $backupDir = $this->ensureBackupsDir();
+        if ($backupDir === null) {
+            return $this->fail('backup_dir_unresolved', 'Could not resolve the deckwp-backups/ directory.');
+        }
+
+        $resolvedZip = realpath($absoluteZipPath);
+        $resolvedBackupDir = realpath($backupDir);
+        if ($resolvedZip === false || $resolvedBackupDir === false) {
+            return $this->fail('zip_not_found', 'Backup zip not found at the given path.');
+        }
+        if (strncmp($resolvedZip, $resolvedBackupDir, strlen($resolvedBackupDir)) !== 0) {
+            return $this->fail('path_escape', 'Backup zip path is outside the managed backups directory.');
+        }
+
+        if ($expectedChecksum !== null && $expectedChecksum !== '') {
+            $actual = @hash_file('sha256', $resolvedZip);
+            if ($actual === false) {
+                return $this->fail('checksum_failed', 'Could not read backup zip to verify checksum.');
+            }
+            if (! hash_equals($expectedChecksum, $actual)) {
+                return $this->fail('checksum_mismatch', 'Backup zip SHA-256 does not match the expected value — file may be corrupt.');
+            }
+        }
+
+        $themesDir = $this->themesDir();
+        if ($themesDir === null) {
+            return $this->fail('themes_dir_unresolved', 'Could not resolve the wp-content/themes/ directory.');
+        }
+
+        $tempExtractDir = $themesDir . '/.deckwp-restore-' . $slug . '-' . bin2hex(random_bytes(4));
+        $extractResult = $this->extractZip($resolvedZip, $tempExtractDir, $slug);
+        if (! $extractResult['ok']) {
+            $this->recursiveDelete($tempExtractDir);
+            return $this->fail($extractResult['error_code'], $extractResult['error']);
+        }
+
+        $extractedSlugDir = $tempExtractDir . '/' . $slug;
+        if (! is_dir($extractedSlugDir)) {
+            $this->recursiveDelete($tempExtractDir);
+            return $this->fail('zip_layout_unexpected', sprintf('Backup zip did not contain a top-level "%s/" folder — refusing to restore.', $slug));
+        }
+
+        $liveTarget = $themesDir . '/' . $slug;
+        $aside = $themesDir . '/.deckwp-old-' . $slug . '-' . bin2hex(random_bytes(4));
+
+        // Move-old-aside (only if there's a live folder).
+        $hadLive = is_dir($liveTarget);
+        if ($hadLive) {
+            if (! @rename($liveTarget, $aside)) {
+                $this->recursiveDelete($tempExtractDir);
+                return $this->fail('rename_failed', 'Could not move the live theme folder aside before restore.');
+            }
+        }
+
+        // Move-new-into-place.
+        if (! @rename($extractedSlugDir, $liveTarget)) {
+            if ($hadLive) {
+                @rename($aside, $liveTarget);
+            }
+            $this->recursiveDelete($tempExtractDir);
+            return $this->fail('rename_failed', 'Could not move the extracted folder into place; rolled the live folder back.');
+        }
+
+        // Cleanup — both temp + aside if we have them.
+        $this->recursiveDelete($tempExtractDir);
+        if ($hadLive) {
+            $this->recursiveDelete($aside);
+        }
+
+        return ['ok' => true];
     }
 
     /**

@@ -75,6 +75,14 @@ class RestoreBackupRoute
                     'type' => 'string',
                     'default' => '',
                 ],
+                // Discriminator: 'plugin' (default, BC with v0.12.0+)
+                // or 'theme' (added v0.32.0). Routes to the matching
+                // BackupManager method on the customer disk.
+                'type' => [
+                    'required' => false,
+                    'type' => 'string',
+                    'default' => 'plugin',
+                ],
             ],
         ];
     }
@@ -84,10 +92,28 @@ class RestoreBackupRoute
         $slug      = (string) $request->get_param('slug');
         $localPath = (string) $request->get_param('local_path');
         $checksum  = (string) $request->get_param('checksum');
+        $type      = (string) $request->get_param('type');
+
+        // Mirror the args() default for direct handler dispatch
+        // (internal tests bypass the routing layer's default).
+        if ($type === '') {
+            $type = 'plugin';
+        }
 
         if ($slug === '' || $localPath === '') {
             return new WP_REST_Response(
                 ['ok' => false, 'error' => 'Missing slug or local_path.', 'error_code' => 'invalid_input'],
+                422
+            );
+        }
+
+        if ($type !== 'plugin' && $type !== 'theme') {
+            return new WP_REST_Response(
+                [
+                    'ok'         => false,
+                    'error'      => sprintf('Restore type "%s" is not supported in this connector version.', $type),
+                    'error_code' => 'unsupported_type',
+                ],
                 422
             );
         }
@@ -105,11 +131,17 @@ class RestoreBackupRoute
             );
         }
 
-        $result = $this->backupManager->restore(
-            $absolutePath,
-            $slug,
-            $checksum !== '' ? $checksum : null
-        );
+        $result = $type === 'theme'
+            ? $this->backupManager->restoreTheme(
+                $absolutePath,
+                $slug,
+                $checksum !== '' ? $checksum : null
+            )
+            : $this->backupManager->restore(
+                $absolutePath,
+                $slug,
+                $checksum !== '' ? $checksum : null
+            );
 
         if (! ($result['ok'] ?? false)) {
             // 422 for validation-shaped failures (bad slug, path

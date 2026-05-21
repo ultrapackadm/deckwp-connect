@@ -85,10 +85,10 @@ class BackupCreateRoute
                     'required' => true,
                     'type'     => 'string',
                 ],
-                // Reserved for future expansion. v1 only handles plugin
-                // snapshots; theme snapshots will require a separate
-                // BackupManager method (different on-disk layout — themes
-                // can have child themes referencing the parent, etc.).
+                // Discriminator: `plugin` or `theme`. Themes ship in
+                // connector v0.32.0 — earlier dashboards default to
+                // `plugin` so the wire contract stays backwards-
+                // compatible with v0.12.0+.
                 'type' => [
                     'required' => false,
                     'type'     => 'string',
@@ -117,10 +117,10 @@ class BackupCreateRoute
             );
         }
 
-        if ($type !== 'plugin') {
+        if ($type !== 'plugin' && $type !== 'theme') {
             // Forward-compatibility: refuse unknown types loudly so
-            // a future dashboard that learned about themes before the
-            // connector did doesn't silently swallow the request.
+            // a future dashboard that learned about a third type
+            // doesn't silently swallow the request.
             return new WP_REST_Response(
                 [
                     'ok'         => false,
@@ -131,15 +131,25 @@ class BackupCreateRoute
             );
         }
 
-        $result = $this->backupManager->snapshot($slug);
+        $result = $type === 'theme'
+            ? $this->backupManager->snapshotTheme($slug)
+            : $this->backupManager->snapshot($slug);
 
         if (! ($result['ok'] ?? false)) {
-            // 422 for validation-shaped failures (bad slug, plugin
+            // 422 for validation-shaped failures (bad slug, item
             // doesn't exist on disk, oversized, path escape attempt);
-            // 500 for filesystem failures we don't expect.
+            // 500 for filesystem failures we don't expect. Same
+            // taxonomy across plugin/theme variants — the manager
+            // returns parallel error codes (plugin_not_found vs
+            // theme_not_found, plugin_too_large vs theme_too_large).
             $status = in_array(
                 (string) ($result['error_code'] ?? ''),
-                ['invalid_slug', 'plugin_not_found', 'plugin_too_large', 'path_escape'],
+                [
+                    'invalid_slug',
+                    'plugin_not_found', 'theme_not_found',
+                    'plugin_too_large', 'theme_too_large',
+                    'path_escape',
+                ],
                 true
             ) ? 422 : 500;
 

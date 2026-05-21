@@ -176,10 +176,12 @@ class Installer
         if ($type === 'theme') {
             // Theme path is separate from plugin — different upgrader,
             // different activation semantics (switch_theme replaces
-            // the live theme rather than adding to the active set),
-            // no backup/smoke check yet. Handled in its own method
-            // for clarity; the plugin path below is unchanged.
-            return $this->installOneTheme($slug, $downloadUrl, $activateAfterInstall);
+            // the live theme rather than adding to the active set).
+            // backup_required is honored as of connector v0.32.0;
+            // smoke check is still TODO since theme post-switch
+            // assertions look very different from plugin activation
+            // checks.
+            return $this->installOneTheme($slug, $downloadUrl, $activateAfterInstall, $backupRequired);
         }
 
         $pluginFile = $this->findPluginFile($slug);
@@ -861,7 +863,7 @@ class Installer
      * @param  bool    $activateAfterInstall  switch_theme to $slug on success
      * @return array<string, mixed>
      */
-    private function installOneTheme(string $slug, string $downloadUrl, bool $activateAfterInstall): array
+    private function installOneTheme(string $slug, string $downloadUrl, bool $activateAfterInstall, bool $backupRequired = false): array
     {
         $this->loadThemeUpgraderClasses();
 
@@ -873,41 +875,74 @@ class Installer
         }
 
         // Upgrade path — theme exists, run Theme_Upgrader::upgrade().
-        // Skipping snapshot + smoke check (Sprint 4 lifecycle work).
         $beforeVersion = $this->readThemeVersion($stylesheet);
+
+        // Mirror the plugin upgrade snapshot block — if the dashboard
+        // asked for a pre-update backup, take it BEFORE the upgrade
+        // and refuse the upgrade if the snapshot fails. An upgrade
+        // without a rollback target is precisely what Sprint 4 + the
+        // KILLER #1 work exists to prevent.
+        $backupResult = null;
+        if ($backupRequired) {
+            $snapshot = $this->backupManager->snapshotTheme($slug);
+            if (! ($snapshot['ok'] ?? false)) {
+                return $this->failure(
+                    $slug,
+                    sprintf(
+                        'Pre-update theme backup failed (%s): %s',
+                        (string) ($snapshot['error_code'] ?? 'unknown'),
+                        (string) ($snapshot['error'] ?? 'no detail')
+                    )
+                );
+            }
+            $backupResult = [
+                'local_path' => (string) $snapshot['local_path'],
+                'checksum'   => (string) $snapshot['checksum'],
+                'size_bytes' => (int) $snapshot['size_bytes'],
+            ];
+        }
 
         $upgrader = new \Theme_Upgrader(new \Automatic_Upgrader_Skin());
         $result = $upgrader->upgrade($stylesheet);
 
         if (is_wp_error($result)) {
-            return $this->failure($slug, $this->formatWpError($result));
+            return $this->withBackup(
+                $this->failure($slug, $this->formatWpError($result)),
+                $backupResult
+            );
         }
 
         // false from Theme_Upgrader::upgrade() = nothing to upgrade
         // (already on latest). Map to `unchanged` so the dashboard
         // doesn't show false-success on a no-op.
         if ($result === false) {
-            return $this->withThemeActivation(
-                $slug,
-                $stylesheet,
-                'unchanged',
-                $beforeVersion,
-                $beforeVersion,
-                null,
-                $activateAfterInstall
+            return $this->withBackup(
+                $this->withThemeActivation(
+                    $slug,
+                    $stylesheet,
+                    'unchanged',
+                    $beforeVersion,
+                    $beforeVersion,
+                    null,
+                    $activateAfterInstall
+                ),
+                $backupResult
             );
         }
 
         $afterVersion = $this->readThemeVersion($stylesheet);
 
-        return $this->withThemeActivation(
-            $slug,
-            $stylesheet,
-            'installed',
-            $beforeVersion,
-            $afterVersion,
-            null,
-            $activateAfterInstall
+        return $this->withBackup(
+            $this->withThemeActivation(
+                $slug,
+                $stylesheet,
+                'installed',
+                $beforeVersion,
+                $afterVersion,
+                null,
+                $activateAfterInstall
+            ),
+            $backupResult
         );
     }
 

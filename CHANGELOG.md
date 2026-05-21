@@ -4,6 +4,49 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.32.0] — 2026-05-21
+
+### Added
+
+- **Theme backup pipeline** — pre-update theme backups now work the
+  same as plugins. The dashboard sends `type: theme` on the wire and
+  the connector materialises a zip of `wp-content/themes/<slug>/`
+  under `wp-content/uploads/deckwp-backups/` with the same retention
+  and checksum semantics as plugin backups.
+
+  Three integration points now accept the discriminator:
+
+  - `BackupManager::snapshotTheme(string $slug)` — mirror of
+    `snapshot()` but targets the themes tree. Themes are always
+    folder-based so we skip the single-file (Hello Dolly) branch.
+    Ceiling raised to 800 MB to accommodate Avada / Divi / Beaver
+    Builder all-in-ones; below the disk-fill safety floor.
+
+  - `BackupManager::restoreTheme(...)` — mirror of `restore()`.
+    Same temp-extract / move-old-aside / move-new-into-place /
+    rollback choreography as plugin restore.
+
+  - `POST /wp-json/deckwp/v1/backup-create` accepts
+    `{ slug, type: 'plugin'|'theme' }` — default `plugin` keeps
+    backwards compatibility with v0.12.0+ dashboards.
+
+  - `POST /wp-json/deckwp/v1/restore-backup` accepts the same
+    `type` discriminator.
+
+  - `Installer::installOneTheme` honors `backup_required` on the
+    upgrade path — the dashboard's pre-update backup row now
+    actually materialises a zip on disk when the orchestrator
+    targets a theme installation. Previously themes silently
+    skipped the snapshot ("no backup/smoke check yet" — fixed
+    here for the backup leg; smoke check remains TODO).
+
+### Wire contract change
+
+`/backup-create` + `/restore-backup` body field `type` is now
+read. Dashboards on connector v0.31.0 or earlier ignore the field
+on outbound (always sends nothing for type, default 'plugin'
+applies). Backwards-compatible by design.
+
 ## [0.31.0] — 2026-05-20
 
 ### Added
