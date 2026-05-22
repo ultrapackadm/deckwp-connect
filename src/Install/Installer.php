@@ -177,11 +177,14 @@ class Installer
             // Theme path is separate from plugin — different upgrader,
             // different activation semantics (switch_theme replaces
             // the live theme rather than adding to the active set).
-            // backup_required is honored as of connector v0.32.0;
-            // smoke check is still TODO since theme post-switch
-            // assertions look very different from plugin activation
-            // checks.
-            return $this->installOneTheme($slug, $downloadUrl, $activateAfterInstall, $backupRequired);
+            // backup_required honored since v0.32.0; smoke check
+            // shipped in v0.33.0 (folder + style.css + index.php +
+            // functions.php token parse + active-state survived,
+            // mirroring the plugin smoke shape with theme-specific
+            // verification points). Auto-rollback via
+            // BackupManager::restoreTheme() is wired through
+            // handleSmokeFailure('theme', ...) when a snapshot exists.
+            return $this->installOneTheme($slug, $downloadUrl, $activateAfterInstall, $backupRequired, $smokeCheckHome);
         }
 
         $pluginFile = $this->findPluginFile($slug);
@@ -279,6 +282,7 @@ class Installer
         $smokeResult = $this->smokeChecker->verify($slug, $pluginFile, $wasActive, $smokeCheckHome);
         if (! ($smokeResult['ok'] ?? false)) {
             return $this->handleSmokeFailure(
+                'plugin',
                 $slug,
                 $beforeVersion,
                 $smokeResult,
@@ -317,18 +321,25 @@ class Installer
      * operator has to handle it manually because there's no path
      * back to a known-good state.
      *
+     * Kind-aware since the rollback target differs:
+     *   - 'plugin' → BackupManager::restore() (plugin folder)
+     *   - 'theme'  → BackupManager::restoreTheme() (theme folder)
+     * The rest of the choreography (snapshot path resolution,
+     * error envelope shape) is identical between kinds.
+     *
+     * @param  string                     $kind         'plugin' | 'theme'
      * @param  array<string, mixed>       $smokeResult
      * @param  array<string, mixed>|null  $backupResult
      * @return array<string, mixed>
      */
-    private function handleSmokeFailure(string $slug, string $beforeVersion, array $smokeResult, $backupResult): array
+    private function handleSmokeFailure(string $kind, string $slug, string $beforeVersion, array $smokeResult, $backupResult): array
     {
         $reason = (string) ($smokeResult['reason'] ?? 'unknown');
         $detail = (string) ($smokeResult['detail'] ?? 'no detail');
 
         if ($backupResult === null) {
-            // No snapshot to restore from. The plugin is left in
-            // whatever state the upgrade produced; surface the
+            // No snapshot to restore from. The plugin/theme is left
+            // in whatever state the upgrade produced; surface the
             // smoke reason verbatim so the dashboard can flag
             // this as a "manual intervention required" failure.
             return $this->failure(
@@ -339,7 +350,7 @@ class Installer
 
         // Resolve the local_path the snapshot returned (relative to
         // uploads basedir) back to absolute, then ask BackupManager
-        // to restore.
+        // to restore via the kind-appropriate method.
         $absoluteZip = $this->absoluteFromUploadsRelative((string) $backupResult['local_path']);
         if ($absoluteZip === null) {
             return $this->withBackup(
@@ -352,11 +363,17 @@ class Installer
             );
         }
 
-        $restore = $this->backupManager->restore(
-            $absoluteZip,
-            $slug,
-            (string) ($backupResult['checksum'] ?? '')
-        );
+        $restore = $kind === 'theme'
+            ? $this->backupManager->restoreTheme(
+                $absoluteZip,
+                $slug,
+                (string) ($backupResult['checksum'] ?? '')
+            )
+            : $this->backupManager->restore(
+                $absoluteZip,
+                $slug,
+                (string) ($backupResult['checksum'] ?? '')
+            );
 
         if (! ($restore['ok'] ?? false)) {
             // Snapshot existed but restore itself failed. This is the
@@ -863,7 +880,7 @@ class Installer
      * @param  bool    $activateAfterInstall  switch_theme to $slug on success
      * @return array<string, mixed>
      */
-    private function installOneTheme(string $slug, string $downloadUrl, bool $activateAfterInstall, bool $backupRequired = false): array
+    private function installOneTheme(string $slug, string $downloadUrl, bool $activateAfterInstall, bool $backupRequired = false, bool $smokeCheckHome = false): array
     {
         $this->loadThemeUpgraderClasses();
 
@@ -876,6 +893,14 @@ class Installer
 
         // Upgrade path — theme exists, run Theme_Upgrader::upgrade().
         $beforeVersion = $this->readThemeVersion($stylesheet);
+
+        // Capture the active-theme state BEFORE the upgrade so the
+        // smoke check can compare. Unlike plugins (WP auto-deactivates
+        // on activation-time fatal), themes don't auto-switch on fatal
+        // — but the signal still catches the rarer case where the
+        // upgrade payload internally renamed the slug or replaced
+        // files with a different theme's content.
+        $wasActive = $this->isThemeActive($slug);
 
         // Mirror the plugin upgrade snapshot block — if the dashboard
         // asked for a pre-update backup, take it BEFORE the upgrade
@@ -932,6 +957,23 @@ class Installer
 
         $afterVersion = $this->readThemeVersion($stylesheet);
 
+        // Post-update smoke check — folder + style.css + index.php +
+        // functions.php PHP validity + active-state survived. If
+        // something's broken AND we have a snapshot, auto-rollback
+        // right here so the site is never left in a broken state.
+        // Without a snapshot, we surface the smoke failure and let
+        // the operator decide.
+        $smokeResult = $this->smokeChecker->verifyTheme($slug, $wasActive, $smokeCheckHome);
+        if (! ($smokeResult['ok'] ?? false)) {
+            return $this->handleSmokeFailure(
+                'theme',
+                $slug,
+                $beforeVersion,
+                $smokeResult,
+                $backupResult
+            );
+        }
+
         return $this->withBackup(
             $this->withThemeActivation(
                 $slug,
@@ -944,6 +986,20 @@ class Installer
             ),
             $backupResult
         );
+    }
+
+    /**
+     * Wrapper around WP's `get_stylesheet()` — returns true iff the
+     * given theme slug matches the currently-active stylesheet.
+     * Captured BEFORE an upgrade so the smoke check can detect a
+     * theme that silently went inactive after.
+     */
+    private function isThemeActive(string $slug): bool
+    {
+        if (! function_exists('get_stylesheet')) {
+            return false;
+        }
+        return (string) get_stylesheet() === $slug;
     }
 
     /**

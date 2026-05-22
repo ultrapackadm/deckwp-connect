@@ -136,6 +136,119 @@ class PostUpdateChecker
         return ['ok' => true];
     }
 
+    /**
+     * Theme equivalent of {@see self::verify()}.
+     *
+     * The verification surface differs from plugins because themes
+     * have a different structure:
+     *
+     *   - Themes always live in a folder (no "single-file theme"
+     *     equivalent to plugins like hello.php).
+     *   - `style.css` is the theme's main metadata file — required
+     *     by WP at the file-existence layer.
+     *   - `index.php` is the bare-minimum template — WP refuses to
+     *     load a theme without it (theme_check rejects, get_template
+     *     falls back to default).
+     *   - `functions.php` is optional but, when present, is loaded
+     *     on every page load — a parse error there breaks the whole
+     *     site, not just the admin. Highest-priority syntax check.
+     *
+     * Active-state semantics for themes: WP doesn't auto-deactivate
+     * on theme fatal the way it does with plugins (a fatal in
+     * functions.php just produces a fatal-error page until the
+     * operator manually intervenes). The `wasActive` signal still
+     * helps catch the rare case where the upgrade replaced files
+     * with a different theme name, leaving WP's `get_stylesheet`
+     * pointing at a slug that's no longer on disk.
+     *
+     * @return array<string, mixed>
+     */
+    public function verifyTheme(string $slug, bool $wasActive, bool $checkHome = false): array
+    {
+        $themesDir = $this->themesDir();
+        if ($themesDir === null) {
+            return $this->fail('themes_dir_unresolved', 'Could not resolve wp-content/themes/.');
+        }
+
+        $themeDir = $themesDir . '/' . $slug;
+        if (! is_dir($themeDir)) {
+            return $this->fail(
+                'theme_folder_missing',
+                sprintf('Theme "%s" folder is gone after upgrade.', $slug)
+            );
+        }
+
+        // style.css — main metadata file. Required by WP.
+        $styleFile = $themeDir . '/style.css';
+        if (! file_exists($styleFile)) {
+            return $this->fail(
+                'theme_style_css_missing',
+                sprintf('Theme "%s" style.css is gone after upgrade — WP requires it for any theme.', $slug)
+            );
+        }
+
+        // index.php — bare-minimum template. Required by WP.
+        $indexFile = $themeDir . '/index.php';
+        if (! file_exists($indexFile)) {
+            return $this->fail(
+                'theme_index_php_missing',
+                sprintf('Theme "%s" index.php is missing after upgrade — WP refuses to load a theme without it.', $slug)
+            );
+        }
+
+        // functions.php — optional, but if present must parse. A
+        // syntax error here is the most common theme breakage mode
+        // because functions.php runs on every page load (admin + front).
+        $functionsFile = $themeDir . '/functions.php';
+        if (file_exists($functionsFile)) {
+            $contents = @file_get_contents($functionsFile);
+            if ($contents === false) {
+                return $this->fail(
+                    'theme_functions_unreadable',
+                    sprintf('Theme "%s" functions.php exists but cannot be read.', $slug)
+                );
+            }
+            try {
+                @token_get_all($contents, defined('TOKEN_PARSE') ? TOKEN_PARSE : 0);
+            } catch (\ParseError $e) {
+                return $this->fail('php_syntax_error', sprintf(
+                    'Theme "%s" functions.php failed PHP token parse after upgrade: %s',
+                    $slug,
+                    $e->getMessage()
+                ));
+            }
+        }
+
+        // Active-state check: less catastrophic for themes than for
+        // plugins (WP doesn't auto-switch on fatal), but still useful
+        // when the upgrade payload had a renamed/different slug
+        // internally — get_stylesheet would still report the old slug
+        // even though the disk has something else.
+        if ($wasActive && function_exists('get_stylesheet')) {
+            $current = (string) get_stylesheet();
+            if ($current !== $slug) {
+                return $this->fail('theme_inactive_after_upgrade', sprintf(
+                    'Theme "%s" was active before the upgrade but get_stylesheet() now reports "%s" — upgrade may have shipped a renamed payload.',
+                    $slug,
+                    $current
+                ));
+            }
+        }
+
+        if ($this->forceFailKillSwitch()) {
+            return $this->fail('dev_force_fail', 'Forced failure via .deckwp-force-smoke-fail kill switch.');
+        }
+
+        if ($checkHome) {
+            $homeCheck = $this->checkHomePage();
+            if (! $homeCheck['ok']) {
+                return $this->fail($homeCheck['reason'], $homeCheck['detail']);
+            }
+        }
+
+        return ['ok' => true];
+    }
+
     /** Path to wp-content/plugins/, or null if WP didn't define WP_PLUGIN_DIR. */
     private function pluginsDir(): ?string
     {
@@ -144,6 +257,19 @@ class PostUpdateChecker
         }
         if (defined('WP_CONTENT_DIR')) {
             return rtrim(WP_CONTENT_DIR, '/\\') . '/plugins';
+        }
+        return null;
+    }
+
+    /**
+     * Path to wp-content/themes/, or null if WP didn't define
+     * WP_CONTENT_DIR. WP doesn't expose a `WP_THEME_DIR` constant —
+     * themes always live under WP_CONTENT_DIR/themes by convention.
+     */
+    private function themesDir(): ?string
+    {
+        if (defined('WP_CONTENT_DIR')) {
+            return rtrim(WP_CONTENT_DIR, '/\\') . '/themes';
         }
         return null;
     }

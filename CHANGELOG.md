@@ -4,6 +4,49 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.33.0] — 2026-05-22
+
+### Added
+
+- **Theme post-update smoke check** — pairs with the theme backup
+  pipeline shipped in v0.32.0 to enable auto-rollback when a theme
+  upgrade leaves the site in a broken state.
+
+  The new `PostUpdateChecker::verifyTheme()` mirrors the plugin
+  smoke shape with theme-specific verification points:
+
+  - **Theme folder exists** after upgrade (themes are always
+    folder-based, no single-file equivalent to plugin layouts
+    like Hello Dolly).
+  - **`style.css` exists** — WP refuses to load a theme without
+    its main metadata file.
+  - **`index.php` exists** — bare-minimum template required by
+    WP for any active theme.
+  - **`functions.php` PHP token parse** when present (optional
+    file, but a syntax error there breaks the whole site since
+    it loads on every page).
+  - **Active-state survived** when the theme was active before
+    the upgrade — catches the rare case where the upgrade
+    payload internally renamed the slug or shipped a different
+    theme's content under the same folder name.
+
+  An optional home-page 5xx probe (`smoke_check_home: true` on
+  the install-batch payload) extends coverage to "the site as a
+  whole is up" the same way the plugin path does.
+
+### Changed
+
+- `Installer::handleSmokeFailure()` is now kind-aware
+  (`'plugin' | 'theme'`) and dispatches the rollback to the
+  matching `BackupManager` method (`restore` vs `restoreTheme`).
+  The error-envelope shape, snapshot-resolution logic, and
+  rolled_back response payload are identical between kinds.
+
+- `Installer::installOneTheme()` captures the active-theme state
+  via `get_stylesheet()` before running `Theme_Upgrader::upgrade()`
+  so the smoke check has the `$wasActive` signal it needs. Mirrors
+  the plugin path's `isPluginActive()` capture.
+
 ## [0.32.0] — 2026-05-21
 
 ### Added
