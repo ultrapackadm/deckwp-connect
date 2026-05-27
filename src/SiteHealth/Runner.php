@@ -82,8 +82,33 @@ class Runner
     public function run(): array
     {
         // Load WP_Site_Health itself.
+        //
+        // WP_Site_Health landed in WP 5.2. Below that, the class doesn't
+        // exist AND the file doesn't exist — a blind require_once would
+        // fatal. The connector officially targets WP 5.2+, but we keep
+        // a graceful degradation path here so that:
+        //   - A site upgraded from a 5.1 install with a stale opcache
+        //     state doesn't take a fatal during the heartbeat window.
+        //   - A site that disabled wp-admin includes (rare, but seen
+        //     on heavily customized hosts) gets an empty Health
+        //     payload instead of breaking every other REST call.
+        //
+        // The dashboard reads `unsupported: true` and renders a
+        // "Site Health unavailable — requires WP 5.2 or newer" notice
+        // on the Health tab instead of an empty crash.
         if (! class_exists('WP_Site_Health')) {
-            require_once ABSPATH . 'wp-admin/includes/class-wp-site-health.php';
+            $siteHealthPath = ABSPATH . 'wp-admin/includes/class-wp-site-health.php';
+            if (! is_readable($siteHealthPath)) {
+                return [
+                    'sent_at'     => time(),
+                    'wp_version'  => function_exists('get_bloginfo') ? (string) get_bloginfo('version') : '',
+                    'php_version' => PHP_VERSION,
+                    'summary'     => ['good' => 0, 'recommended' => 0, 'critical' => 0, 'error' => 0],
+                    'checks'      => [],
+                    'unsupported' => true,
+                ];
+            }
+            require_once $siteHealthPath;
         }
 
         // WP_Site_Health's individual test methods call into utility

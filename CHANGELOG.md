@@ -4,6 +4,45 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.34.0] — 2026-05-27
+
+### Changed
+
+- **Lower WordPress minimum to 5.2** (was 5.6). Audit of the
+  connector's WP API surface showed everything it touches existed
+  since WP 4.x — except `WP_Site_Health`, which landed in 5.2. The
+  5.6 floor we previously declared was a conservative round-number
+  pick, not a technical requirement.
+
+  Net effect: agencies and resellers can now pair sites running
+  WP 5.2 through 5.5 (≈1–2% additional surface in the wild) without
+  having to upgrade WP first. Above-5.6 behavior is unchanged.
+
+### Added
+
+- **Graceful degradation of the Site Health module** when
+  `WP_Site_Health` is missing.
+
+  `SiteHealth\Runner::run()` previously did a blind
+  `require_once ABSPATH . 'wp-admin/includes/class-wp-site-health.php'`
+  after a `class_exists` check. On WP < 5.2 (or on heavily
+  customized hosts that disable wp-admin includes for performance
+  reasons), the file doesn't exist and the require would fatal,
+  taking down the rest of the connector's REST surface with it.
+
+  The new path checks `is_readable($path)` first. If the file is
+  missing, the runner returns a structurally valid payload with
+  `unsupported: true` and empty checks, so the dashboard's Health
+  tab can show "Site Health unavailable — requires WP 5.2 or newer"
+  instead of an empty crash. Every other connector surface
+  (Updates, Backups, Scans, Uptime, SSO) continues to work.
+
+### Compatibility
+
+- **Tested up to:** WP 6.7
+- **Requires at least:** WP 5.2 (was 5.6)
+- **Requires PHP:** 7.4 (unchanged)
+
 ## [0.33.0] — 2026-05-22
 
 ### Added
