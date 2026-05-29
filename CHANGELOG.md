@@ -4,6 +4,32 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.35.0] — 2026-05-29
+
+### Added
+
+- **Fallback transport for sites that block the REST API.** Some hosts
+  and "harden WordPress" security plugins firewall `/wp-json` entirely,
+  which previously left a paired site unreachable from your DeckWP
+  dashboard even though the connector was installed and healthy.
+
+  DeckWP Connect now accepts the dashboard's management commands over a
+  second, REST-independent path: an HMAC-signed request to a normal
+  front-end URL, caught early on the `init` hook and routed to the same
+  command handlers as the REST API. If `/wp-json` works, nothing
+  changes; the fallback only matters when it's blocked.
+
+  Security and privacy are unchanged from the REST surface: every
+  command is HMAC-SHA256 verified with the same 60-second anti-replay
+  window, the requested action is cryptographically bound to the
+  signature (it can't be tampered into a different command), and the
+  connector still does nothing on ordinary visitor page loads — it only
+  acts when your dashboard sends a signed request.
+
+### Compatibility
+
+- No configuration needed. WordPress 5.2+ / PHP 7.4+ unchanged.
+
 ## [0.34.0] — 2026-05-27
 
 ### Changed
