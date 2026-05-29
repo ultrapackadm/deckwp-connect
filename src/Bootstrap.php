@@ -10,6 +10,7 @@ use DeckWP\Connect\Maintenance\MaintenanceGuard;
 use DeckWP\Connect\REST\Server as RestServer;
 use DeckWP\Connect\Scan\Scheduler as ScanScheduler;
 use DeckWP\Connect\Settings\Page as SettingsPage;
+use DeckWP\Connect\Transport\InitHookFallback;
 use DeckWP\Connect\Updater\SelfUpdater;
 use DeckWP\Connect\Updater\UpdateSuppressor;
 use DeckWP\Connect\Whitelabel\Branding as WhitelabelBranding;
@@ -71,10 +72,14 @@ use DeckWP\Connect\Whitelabel\Branding as WhitelabelBranding;
  *                                  upgrade flow. Operator clicks Update
  *                                  on the WP Plugins page; no manual
  *                                  redeploy.
- *
- * ## Subsystems planned (per CLAUDE.md, will be wired in upcoming sprints)
- *
- *   - Transport\InitHookFallback — bypass when /wp-json is blocked by host
+ *   - Transport\InitHookFallback — `init`-hook fallback transport that
+ *                                  accepts HMAC-signed commands on a
+ *                                  normal front-end URL when /wp-json is
+ *                                  blocked by the host or a security
+ *                                  plugin. Reuses the REST handlers +
+ *                                  HMAC verifier; inbound only, inert on
+ *                                  normal page loads. Runs at init
+ *                                  priority 0 (before MaintenanceGuard).
  *
  * ## Singleton
  *
@@ -119,6 +124,14 @@ class Bootstrap
         (new HeartbeatScheduler())->register();
         (new ScanScheduler())->register();
         (new RestServer())->register();
+
+        // REST fallback transport — accepts HMAC-signed commands on a
+        // normal front-end URL (init hook, priority 0) for sites where a
+        // host or security plugin blocks /wp-json. Registering before the
+        // MaintenanceGuard (priority 1) lets the dashboard keep managing a
+        // site whose maintenance mode is on.
+        (new InitHookFallback())->register();
+
         (new UpdateSuppressor())->register();
         (new WhitelabelBranding())->register();
         (new SelfUpdater())->register();
