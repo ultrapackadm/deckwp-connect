@@ -4,6 +4,33 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.37.0] — 2026-06-01
+
+### Added
+
+- **Off-site restore fallback.** `POST /deckwp/v1/restore-backup` now
+  accepts an optional `download_url` — a short-lived pre-signed GET url
+  for the backup's off-site (Backblaze B2) copy. It's used **only when
+  the local zip at `local_path` is missing** on this server (disaster
+  recovery: the site was rebuilt, the uploads dir was wiped, the server
+  was migrated). When the local zip is present, restore uses it exactly
+  as before — no egress, no behaviour change.
+
+  When the fallback kicks in, the connector streams the off-site copy
+  into the managed backups directory (via `BackupManager::downloadOffsite()`)
+  and then validates + extracts it through the normal restore path,
+  including the SHA-256 checksum guard. The download streams to a temp
+  file and renames atomically into place, so an interrupted fetch never
+  leaves a half-written zip for restore to choke on. The target path is
+  containment-checked to the managed directory.
+
+### Compatibility
+
+- Fully backwards-compatible. A dashboard that omits `download_url` (or
+  any older dashboard) gets identical local-only restore behaviour.
+  Requires cURL (already required); pairs with the dashboard sending a
+  `download_url` only for backups that have an off-site copy.
+
 ## [0.36.0] — 2026-06-01
 
 ### Added

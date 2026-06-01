@@ -190,6 +190,127 @@ class BackupManager
     }
 
     /**
+     * Download an off-site backup zip from a pre-signed GET URL into
+     * `$absolutePath` (restore fallback — Backblaze B2, connector
+     * v0.37.0). Used only when the local zip is missing on this server
+     * (disaster recovery: the site was rebuilt, the uploads dir was
+     * wiped, the server was migrated). The dashboard mints the signed
+     * URL; this method just streams the bytes to disk.
+     *
+     * Streams to a temp file in the managed backups directory, then
+     * atomically renames into place on success — an interrupted
+     * download never leaves a half-written zip at the target path for
+     * restore() to choke on. Streams via cURL so a large zip never
+     * sits in PHP memory.
+     *
+     * Security: `$absolutePath` must resolve to inside our managed
+     * backups directory (we check its parent dir, since the target file
+     * doesn't exist yet) — a caller-supplied path can never write an
+     * arbitrary location on disk.
+     *
+     * @param string                $absolutePath Where to write the zip (inside deckwp-backups/).
+     * @param string                $url          Pre-signed GET URL (short-lived).
+     * @param array<string, string> $headers      Optional signed headers to send verbatim.
+     * @return array<string, mixed> ['ok' => bool, 'error'?, 'error_code'?, 'http_status'?, 'size_bytes'?]
+     */
+    public function downloadOffsite(string $absolutePath, string $url, array $headers = []): array
+    {
+        if ($url === '') {
+            return $this->fail('offsite_no_url', 'No pre-signed download URL provided.');
+        }
+
+        $backupDir = $this->ensureBackupsDir();
+        if ($backupDir === null) {
+            return $this->fail('backup_dir_uncreatable', 'Could not create or find the deckwp-backups/ directory.');
+        }
+
+        // Containment: validate the target's PARENT directory (the file
+        // itself doesn't exist yet) resolves inside the managed dir.
+        $resolvedBackupDir = realpath($backupDir);
+        $resolvedTargetDir = realpath(dirname($absolutePath));
+        if ($resolvedBackupDir === false
+            || $resolvedTargetDir === false
+            || strncmp($resolvedTargetDir, $resolvedBackupDir, strlen($resolvedBackupDir)) !== 0
+        ) {
+            return $this->fail('offsite_path_escape', 'Refusing to download to a path outside the managed backups directory.');
+        }
+
+        if (! function_exists('curl_init')) {
+            return $this->fail('offsite_no_curl', 'cURL is not available — cannot stream the off-site download.');
+        }
+
+        $tmp = $backupDir . '/.deckwp-dl-' . bin2hex(random_bytes(4)) . '.zip';
+        $fh = @fopen($tmp, 'wb');
+        if ($fh === false) {
+            return $this->fail('offsite_tmp_uncreatable', 'Could not open a temp file for the off-site download.');
+        }
+
+        $headerLines = [];
+        foreach ($headers as $name => $value) {
+            $headerLines[] = $name . ': ' . $value;
+        }
+
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_FILE, $fh);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+        curl_setopt($ch, CURLOPT_MAXREDIRS, 5);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 600);
+        if (! empty($headerLines)) {
+            curl_setopt($ch, CURLOPT_HTTPHEADER, $headerLines);
+        }
+
+        curl_exec($ch);
+        $errNo = curl_errno($ch);
+        $errStr = curl_error($ch);
+        $httpStatus = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        @fclose($fh);
+
+        if ($errNo !== 0) {
+            @unlink($tmp);
+
+            return [
+                'ok'          => false,
+                'error'       => 'cURL transport error during off-site download: ' . $errStr,
+                'error_code'  => 'offsite_transport',
+                'http_status' => $httpStatus,
+            ];
+        }
+
+        if ($httpStatus < 200 || $httpStatus >= 300) {
+            @unlink($tmp);
+
+            return [
+                'ok'          => false,
+                'error'       => sprintf('Off-site storage returned HTTP %d for the download.', $httpStatus),
+                'error_code'  => 'offsite_download_failed',
+                'http_status' => $httpStatus,
+            ];
+        }
+
+        $size = @filesize($tmp);
+        if ($size === false || $size === 0) {
+            @unlink($tmp);
+
+            return $this->fail('offsite_download_empty', 'Off-site download produced an empty file.');
+        }
+
+        if (! @rename($tmp, $absolutePath)) {
+            @unlink($tmp);
+
+            return $this->fail('offsite_rename_failed', 'Could not move the downloaded zip into place.');
+        }
+
+        return [
+            'ok'          => true,
+            'http_status' => $httpStatus,
+            'size_bytes'  => (int) $size,
+        ];
+    }
+
+    /**
      * Snapshot the plugin folder at `wp-content/plugins/<slug>/` into
      * a zip under our managed backups directory.
      *
