@@ -15,6 +15,7 @@ use DeckWP\Connect\REST\Routes\InstallBatchRoute;
 use DeckWP\Connect\REST\Routes\InventoryRoute;
 use DeckWP\Connect\REST\Routes\MaintenanceRoute;
 use DeckWP\Connect\REST\Routes\PluginToggleRoute;
+use DeckWP\Connect\REST\Routes\BackupOffsiteUploadRoute;
 use DeckWP\Connect\REST\Routes\RestoreBackupRoute;
 use DeckWP\Connect\REST\Routes\SiteHealthRoute;
 use DeckWP\Connect\REST\Routes\ThemeDeleteRoute;
@@ -142,6 +143,9 @@ class Server
     /** @var RestoreBackupRoute */
     private $restoreBackupRoute;
 
+    /** @var BackupOffsiteUploadRoute */
+    private $backupOffsiteUploadRoute;
+
     /** @var DeleteBackupRoute */
     private $deleteBackupRoute;
 
@@ -192,6 +196,7 @@ class Server
         ScanRoute $scanRoute = null,
         InstallBatchRoute $installBatchRoute = null,
         RestoreBackupRoute $restoreBackupRoute = null,
+        BackupOffsiteUploadRoute $backupOffsiteUploadRoute = null,
         DeleteBackupRoute $deleteBackupRoute = null,
         InventoryRoute $inventoryRoute = null,
         SsoLoginRoute $ssoLoginRoute = null,
@@ -212,6 +217,7 @@ class Server
         $this->scanRoute             = $scanRoute ?? new ScanRoute();
         $this->installBatchRoute     = $installBatchRoute ?? new InstallBatchRoute();
         $this->restoreBackupRoute    = $restoreBackupRoute ?? new RestoreBackupRoute();
+        $this->backupOffsiteUploadRoute = $backupOffsiteUploadRoute ?? new BackupOffsiteUploadRoute();
         $this->deleteBackupRoute     = $deleteBackupRoute ?? new DeleteBackupRoute();
         $this->inventoryRoute        = $inventoryRoute ?? new InventoryRoute();
         $this->ssoLoginRoute         = $ssoLoginRoute ?? new SsoLoginRoute();
@@ -267,6 +273,12 @@ class Server
             'deckwp/v1',
             '/delete-backup',
             $this->deleteBackupRoute->args($permissionCallback)
+        );
+
+        register_rest_route(
+            'deckwp/v1',
+            '/backup-offsite-upload',
+            $this->backupOffsiteUploadRoute->args($permissionCallback)
         );
 
         register_rest_route(

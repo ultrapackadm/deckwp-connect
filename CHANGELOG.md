@@ -4,6 +4,31 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.38.0] — 2026-06-01
+
+### Added
+
+- **Async off-site upload endpoint.** New
+  `POST /deckwp/v1/backup-offsite-upload` ships an already-written local
+  backup zip to a pre-signed PUT URL (Backblaze B2), given
+  `{ local_path, url, headers?, key? }`. It resolves `local_path`
+  relative to the uploads basedir and streams the zip via
+  `BackupManager::uploadOffsite()` (containment-checked to the managed
+  backups directory).
+
+  This is the off-site path for **pre-update** backups: those are taken
+  inside `install-batch` (the critical upgrade path), so rather than
+  extend that request with a potentially-large B2 upload — and risk a
+  timeout mid-upgrade — the dashboard snapshots locally during the
+  upgrade as before, then calls this route from a queued job afterwards.
+  Egress latency is fully decoupled from the upgrade. Works for any
+  existing local backup, not just pre-update ones.
+
+### Compatibility
+
+- Purely additive — a new route, no change to existing endpoints.
+  Requires cURL (already required).
+
 ## [0.37.0] — 2026-06-01
 
 ### Added
