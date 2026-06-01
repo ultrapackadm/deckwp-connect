@@ -54,11 +54,15 @@ use WP_REST_Response;
  * tell apart route-driven backups from install-batch-driven ones
  * (the latter never fire this hook in v1; we may extend later).
  *
- * Reserved for the planned UltraHub integration — once the
- * UltraPack-side hub publishes its outbound API, a dedicated
- * subsystem in this plugin will subscribe to the hook and push the
- * zip to remote object storage. **That subsystem is NOT implemented
- * yet.** This route ships only the local snapshot half.
+ * Off-site upload (since v0.36.0): when the dashboard includes an
+ * `offsite` descriptor in the request (a pre-signed PUT url + signed
+ * headers + object key), the route streams the just-written zip to
+ * remote object storage (Backblaze B2) right after the local snapshot
+ * and reports the outcome under `backup.offsite`. This is opt-in per
+ * team on the dashboard side and best-effort here — a failed upload
+ * never downgrades the locally-successful snapshot. The
+ * `deckwp_connect_backup_created` hook below still fires either way,
+ * reserved for the planned UltraHub integration.
  */
 class BackupCreateRoute
 {
@@ -93,6 +97,16 @@ class BackupCreateRoute
                     'required' => false,
                     'type'     => 'string',
                     'default'  => 'plugin',
+                ],
+                // Optional off-site upload descriptor (connector
+                // v0.36.0+). Shape: { url, headers: {..}, key }. When
+                // present, after writing the local snapshot we stream the
+                // zip to the pre-signed PUT `url` and report the outcome
+                // under `backup.offsite`. Absent (or sent to an older
+                // connector) → local-only, no `backup.offsite` block.
+                'offsite' => [
+                    'required' => false,
+                    'type'     => 'object',
                 ],
             ],
         ];
@@ -162,6 +176,35 @@ class BackupCreateRoute
             'checksum'      => (string) ($result['checksum'] ?? ''),
             'size_bytes'    => (int)    ($result['size_bytes'] ?? 0),
         ];
+
+        // Off-site upload (opt-in, connector v0.36.0+). The dashboard
+        // mints a short-lived pre-signed PUT url + signed headers and
+        // passes them under `offsite`. We stream the just-written zip
+        // straight to it. Best-effort: a failure here is REPORTED in the
+        // payload (backup.offsite.ok = false) but never downgrades the
+        // locally-successful snapshot to an HTTP error — the dashboard
+        // simply records the backup as local-only.
+        $offsite = $request->get_param('offsite');
+        if (is_array($offsite) && ! empty($offsite['url'])) {
+            $uploadResult = $this->backupManager->uploadOffsite(
+                (string) ($result['absolute_path'] ?? ''),
+                (string) $offsite['url'],
+                is_array($offsite['headers'] ?? null) ? $offsite['headers'] : []
+            );
+
+            if (! empty($uploadResult['ok'])) {
+                $backup['offsite'] = [
+                    'ok'  => true,
+                    'key' => (string) ($offsite['key'] ?? ''),
+                ];
+            } else {
+                $backup['offsite'] = [
+                    'ok'         => false,
+                    'error'      => (string) ($uploadResult['error'] ?? 'Off-site upload failed.'),
+                    'error_code' => (string) ($uploadResult['error_code'] ?? 'offsite_upload_failed'),
+                ];
+            }
+        }
 
         /**
          * Fires after a successful on-demand backup. Reserved for the

@@ -4,6 +4,39 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.36.0] — 2026-06-01
+
+### Added
+
+- **Off-site backup upload (opt-in).** `POST /deckwp/v1/backup-create`
+  now accepts an optional `offsite` descriptor — a short-lived
+  pre-signed PUT url, the signed headers to send with it, and the
+  target object key. When present, the connector streams the
+  just-written backup zip straight to remote object storage
+  (Backblaze B2) right after taking the local snapshot, and reports the
+  outcome back to the dashboard under `backup.offsite` (`ok` plus the
+  stored `key`, or `ok:false` with an error code).
+
+  The local snapshot remains the source of truth and is unchanged: the
+  off-site copy is purely additive, enabled per-team on the dashboard,
+  and **best-effort** — a failed or rejected upload is reported but
+  never turns a locally-successful backup into an error.
+
+  The upload streams from disk via cURL with an explicit content length
+  (never chunked, which S3/B2 pre-signed PUTs reject) so even a large
+  plugin/theme zip never has to sit in PHP memory. The file is
+  containment-checked to live inside the managed backups directory
+  before upload, so a malformed request can't exfiltrate an arbitrary
+  server file.
+
+### Compatibility
+
+- Fully backwards-compatible. A dashboard that omits `offsite` (or any
+  older dashboard) gets the exact same local-only behaviour as before —
+  no `backup.offsite` block is returned. Requires PHP 7.4+ and cURL
+  (already required); when cURL is unavailable the upload is skipped
+  with an `offsite_no_curl` code and the local backup still succeeds.
+
 ## [0.35.0] — 2026-05-29
 
 ### Added

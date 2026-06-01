@@ -80,6 +80,116 @@ class BackupManager
     public const BACKUPS_DIR_NAME = 'deckwp-backups';
 
     /**
+     * Stream an already-produced backup zip to a pre-signed PUT URL
+     * (off-site copy — Backblaze B2 in v1, shipped in connector v0.36.0).
+     *
+     * Best-effort by contract: the local zip stays the source of truth,
+     * so an off-site failure is REPORTED but never invalidates a
+     * successful local snapshot. The dashboard decides what to record
+     * from the returned `ok` flag (it stores `b2_path` only on ok=true).
+     *
+     * The file is streamed from disk via cURL (CURLOPT_UPLOAD + an
+     * explicit infile size) so even a 500 MB plugin zip never has to sit
+     * in PHP memory, and we send a real Content-Length rather than
+     * chunked transfer — S3/B2 pre-signed PUTs reject chunked encoding.
+     *
+     * Security: we only ever upload a file that resolves to inside our
+     * own managed backups directory — a caller-supplied path can never
+     * exfiltrate an arbitrary server file to an attacker-chosen URL.
+     *
+     * @param string                $absolutePath Absolute path to the zip on disk.
+     * @param string                $url          Pre-signed PUT URL (short-lived).
+     * @param array<string, string> $headers      Signed headers to send verbatim.
+     * @return array<string, mixed> ['ok' => bool, 'error'?, 'error_code'?, 'http_status'?, 'size_bytes'?]
+     */
+    public function uploadOffsite(string $absolutePath, string $url, array $headers = []): array
+    {
+        if ($url === '') {
+            return $this->fail('offsite_no_url', 'No pre-signed upload URL provided.');
+        }
+
+        $resolved = realpath($absolutePath);
+        if ($resolved === false || ! is_file($resolved) || ! is_readable($resolved)) {
+            return $this->fail('offsite_zip_unreadable', 'Backup zip is missing or unreadable for off-site upload.');
+        }
+
+        // Containment guard: only upload zips that live inside our
+        // managed backups directory.
+        $backupDir = $this->ensureBackupsDir();
+        $resolvedBackupDir = $backupDir !== null ? realpath($backupDir) : false;
+        if ($resolvedBackupDir === false
+            || strncmp($resolved, $resolvedBackupDir, strlen($resolvedBackupDir)) !== 0
+        ) {
+            return $this->fail('offsite_path_escape', 'Refusing to upload a file outside the managed backups directory.');
+        }
+
+        if (! function_exists('curl_init')) {
+            return $this->fail('offsite_no_curl', 'cURL is not available — cannot stream the off-site upload.');
+        }
+
+        $size = @filesize($resolved);
+        if ($size === false) {
+            return $this->fail('offsite_zip_unreadable', 'Could not stat the backup zip for off-site upload.');
+        }
+
+        $fh = @fopen($resolved, 'rb');
+        if ($fh === false) {
+            return $this->fail('offsite_zip_unreadable', 'Could not open the backup zip for off-site upload.');
+        }
+
+        // Pre-signed headers verbatim, plus a defused Expect: header —
+        // cURL otherwise sends "Expect: 100-continue" on large PUTs,
+        // which some object stores reject or stall on.
+        $headerLines = [];
+        foreach ($headers as $name => $value) {
+            $headerLines[] = $name . ': ' . $value;
+        }
+        $headerLines[] = 'Expect:';
+
+        $ch = curl_init();
+        curl_setopt($ch, CURLOPT_URL, $url);
+        curl_setopt($ch, CURLOPT_UPLOAD, true);
+        curl_setopt($ch, CURLOPT_INFILE, $fh);
+        curl_setopt($ch, CURLOPT_INFILESIZE, $size);
+        curl_setopt($ch, CURLOPT_HTTPHEADER, $headerLines);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 600);
+        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
+
+        curl_exec($ch);
+        $errNo = curl_errno($ch);
+        $errStr = curl_error($ch);
+        $httpStatus = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        @fclose($fh);
+
+        if ($errNo !== 0) {
+            return [
+                'ok'          => false,
+                'error'       => 'cURL transport error during off-site upload: ' . $errStr,
+                'error_code'  => 'offsite_transport',
+                'http_status' => $httpStatus,
+            ];
+        }
+
+        if ($httpStatus < 200 || $httpStatus >= 300) {
+            return [
+                'ok'          => false,
+                'error'       => sprintf('Off-site storage rejected the upload (HTTP %d).', $httpStatus),
+                'error_code'  => 'offsite_rejected',
+                'http_status' => $httpStatus,
+            ];
+        }
+
+        return [
+            'ok'          => true,
+            'http_status' => $httpStatus,
+            'size_bytes'  => (int) $size,
+        ];
+    }
+
+    /**
      * Snapshot the plugin folder at `wp-content/plugins/<slug>/` into
      * a zip under our managed backups directory.
      *
