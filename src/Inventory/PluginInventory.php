@@ -2,6 +2,8 @@
 
 namespace DeckWP\Connect\Inventory;
 
+use DeckWP\Connect\License\LicenseDetector;
+
 defined('ABSPATH') || exit;
 
 /**
@@ -32,6 +34,14 @@ defined('ABSPATH') || exit;
  */
 class PluginInventory
 {
+    /** @var LicenseDetector */
+    private $licenseDetector;
+
+    public function __construct(LicenseDetector $licenseDetector = null)
+    {
+        $this->licenseDetector = $licenseDetector ?? new LicenseDetector();
+    }
+
     /**
      * @return array<int, array<string, mixed>>
      */
@@ -43,12 +53,18 @@ class PluginInventory
 
         $all = (array) get_plugins();
         $active = (array) get_option('active_plugins', []);
+        // updatePayload() refreshes + unlocks the update_plugins transient
+        // FIRST, so the license detector's transient signal (read below)
+        // sees the raw response including managed slugs.
         $updates = $this->updatePayload();
 
         $rows = [];
         foreach ($all as $file => $data) {
+            $slug = $this->slugFor((string) $file);
+            $license = $this->licenseDetector->detect($slug, 'plugin');
+
             $rows[] = [
-                'slug'             => $this->slugFor((string) $file),
+                'slug'             => $slug,
                 'plugin_file'      => (string) $file,
                 'name'             => isset($data['Name']) ? (string) $data['Name'] : '',
                 'version'          => isset($data['Version']) ? (string) $data['Version'] : '',
@@ -57,6 +73,8 @@ class PluginInventory
                 'new_version'      => isset($updates[$file]['new_version'])
                     ? (string) $updates[$file]['new_version']
                     : null,
+                'license_state'    => $license['state'],
+                'license_provider' => $license['provider'],
             ];
         }
 

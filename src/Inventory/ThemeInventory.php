@@ -2,6 +2,8 @@
 
 namespace DeckWP\Connect\Inventory;
 
+use DeckWP\Connect\License\LicenseDetector;
+
 defined('ABSPATH') || exit;
 
 /**
@@ -40,6 +42,14 @@ defined('ABSPATH') || exit;
  */
 class ThemeInventory
 {
+    /** @var LicenseDetector */
+    private $licenseDetector;
+
+    public function __construct(LicenseDetector $licenseDetector = null)
+    {
+        $this->licenseDetector = $licenseDetector ?? new LicenseDetector();
+    }
+
     /**
      * @return array<int, array<string, mixed>>
      */
@@ -80,6 +90,8 @@ class ThemeInventory
             $template = method_exists($theme, 'get') ? (string) $theme->get('Template') : '';
             $parent = ($template !== '' && $template !== $slug) ? $template : null;
 
+            $license = $this->licenseDetector->detect($slug, 'theme');
+
             $rows[] = [
                 'slug'             => $slug,
                 'name'             => $name,
@@ -90,6 +102,8 @@ class ThemeInventory
                 'new_version'      => isset($updates[$slug]['new_version'])
                     ? (string) $updates[$slug]['new_version']
                     : null,
+                'license_state'    => $license['state'],
+                'license_provider' => $license['provider'],
             ];
         }
 

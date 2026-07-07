@@ -4,6 +4,42 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **License protection.** New `License\LicenseDetector` reports, per
+  installed plugin/theme, whether the site carries an ACTIVE official
+  license (`license_state` = `licensed_active` | `unknown`, plus a
+  `license_provider` label). Signals: an update in the WP transient
+  whose package is neither wp.org nor DeckWP (a third-party author
+  updater), a custom `Update URI:` header off wp.org, and known
+  frameworks (EDD `<slug>_license_status`, Freemius `fs_accounts`),
+  extensible via the `deckwp_detect_active_license` filter. Fail-open:
+  only flags when a signal is confident.
+- The inventory / heartbeat payload now carries `license_state` +
+  `license_provider` per plugin and theme (consumed by the dashboard to
+  skip auto-updates on licensed items and require an explicit override
+  on manual ones).
+- **Install-time safeguard.** `Installer` refuses to overwrite a plugin
+  or theme that carries an active official license with a catalog build
+  (`download_url` present) unless the request includes
+  `license_override: true`. Uses framework signals only (the update
+  transient is circular at the point of application). Final line of
+  defense behind the dashboard gate.
+
+### Testing
+
+- First unit-test harness for the connector: `tests/bootstrap.php`
+  (minimal WP stubs) + `phpunit.xml.dist` + `LicenseDetectorTest`
+  (11 cases).
+
+### Compatibility
+
+- Purely additive — extra payload fields (ignored by older dashboards)
+  and a new refusal path that only triggers for licensed items without
+  an override. No change to existing endpoints or the wire contract.
+
 ## [0.38.0] — 2026-06-01
 
 ### Added

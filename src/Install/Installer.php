@@ -5,6 +5,7 @@ namespace DeckWP\Connect\Install;
 defined('ABSPATH') || exit;
 
 use DeckWP\Connect\Backup\BackupManager;
+use DeckWP\Connect\License\LicenseDetector;
 use DeckWP\Connect\Smoke\PostUpdateChecker;
 
 /**
@@ -96,10 +97,17 @@ class Installer
     /** @var PostUpdateChecker */
     private $smokeChecker;
 
-    public function __construct(BackupManager $backupManager = null, PostUpdateChecker $smokeChecker = null)
-    {
-        $this->backupManager = $backupManager ?? new BackupManager();
-        $this->smokeChecker  = $smokeChecker ?? new PostUpdateChecker();
+    /** @var LicenseDetector */
+    private $licenseDetector;
+
+    public function __construct(
+        BackupManager $backupManager = null,
+        PostUpdateChecker $smokeChecker = null,
+        LicenseDetector $licenseDetector = null
+    ) {
+        $this->backupManager   = $backupManager ?? new BackupManager();
+        $this->smokeChecker    = $smokeChecker ?? new PostUpdateChecker();
+        $this->licenseDetector = $licenseDetector ?? new LicenseDetector();
     }
 
     /**
@@ -184,6 +192,16 @@ class Installer
             // verification points). Auto-rollback via
             // BackupManager::restoreTheme() is wired through
             // handleSmokeFailure('theme', ...) when a snapshot exists.
+            // License protection safeguard (theme upgrade path). Only an
+            // EXISTING theme has a license to protect — a fresh install
+            // has nothing to overwrite. Mirrors the plugin path below.
+            if ($this->themeExists($slug)) {
+                $licenseBlock = $this->licenseGuard($slug, 'theme', $item);
+                if ($licenseBlock !== null) {
+                    return $licenseBlock;
+                }
+            }
+
             return $this->installOneTheme($slug, $downloadUrl, $activateAfterInstall, $backupRequired, $smokeCheckHome);
         }
 
@@ -198,6 +216,16 @@ class Installer
         // meaningless on a brand-new install).
         if ($pluginFile === null) {
             return $this->runFreshInstall($slug, $downloadUrl, $activateAfterInstall);
+        }
+
+        // License protection safeguard (upgrade path): refuse to overwrite
+        // a plugin that carries an active official license with the catalog
+        // build, unless the dashboard explicitly authorized the override.
+        // Final line of defense behind the dashboard's UpdateOrchestrator
+        // gate — closes the race where a license appears after dispatch.
+        $licenseBlock = $this->licenseGuard($slug, 'plugin', $item);
+        if ($licenseBlock !== null) {
+            return $licenseBlock;
         }
 
         $beforeVersion = $this->readPluginVersion($pluginFile);
@@ -828,6 +856,57 @@ class Installer
         if (! class_exists('Automatic_Upgrader_Skin')) {
             require_once ABSPATH . 'wp-admin/includes/class-automatic-upgrader-skin.php';
         }
+    }
+
+    /**
+     * License protection safeguard. Returns a failure result when the
+     * item carries an active official license AND the dashboard did not
+     * authorize an override; otherwise null (proceed).
+     *
+     * Only fires when the dashboard handed us a specific build to write
+     * (`download_url` — the premium/catalog overwrite). A wp.org upgrade
+     * resolves its own package and can't strip a license, so it's exempt.
+     * Uses framework signals only (`$useTransient = false`): the update
+     * transient is circular here because the connector just refreshed it
+     * with the managed-updates bypass.
+     *
+     * @param  array<string, mixed>  $item
+     * @return array<string, mixed>|null
+     */
+    private function licenseGuard(string $slug, string $type, array $item)
+    {
+        if (empty($item['download_url'])) {
+            return null;
+        }
+        if (! empty($item['license_override'])) {
+            return null;
+        }
+        if (! $this->licenseDetector->isLicensedActive($slug, $type, false)) {
+            return null;
+        }
+
+        return $this->failure(
+            $slug,
+            sprintf(
+                'Refusing to overwrite %s "%s": an active official license was detected on this site '
+                . '(original_license_protected). Confirm the override in the dashboard to replace it.',
+                $type,
+                $slug
+            )
+        );
+    }
+
+    /**
+     * True when a theme with this stylesheet slug is already installed —
+     * i.e. an upgrade (something to protect), not a fresh install.
+     */
+    private function themeExists(string $slug): bool
+    {
+        if (! function_exists('wp_get_theme')) {
+            return false;
+        }
+
+        return wp_get_theme($slug)->exists();
     }
 
     /**
