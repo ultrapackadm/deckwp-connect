@@ -38,6 +38,8 @@ $GLOBALS['__wp_options'] = [];
 $GLOBALS['__wp_site_transients'] = [];
 $GLOBALS['__wp_plugins'] = [];
 $GLOBALS['__wp_filters'] = [];
+$GLOBALS['__wp_file_data'] = [];
+$GLOBALS['__wp_themes'] = [];
 
 /** Reset all stub state — call in each test's setUp(). */
 function wpStubReset(): void
@@ -46,6 +48,32 @@ function wpStubReset(): void
     $GLOBALS['__wp_site_transients'] = [];
     $GLOBALS['__wp_plugins'] = [];
     $GLOBALS['__wp_filters'] = [];
+    $GLOBALS['__wp_file_data'] = [];
+    $GLOBALS['__wp_themes'] = [];
+}
+
+/**
+ * Seed header data for a plugin file path (as get_file_data() reads it)
+ * AND create the physical file so is_readable() passes. Returns the path.
+ */
+function wpStubSetPluginFileHeaders(string $file, array $headers): string
+{
+    $path = WP_PLUGIN_DIR . '/' . $file;
+    if (! is_dir(dirname($path))) {
+        mkdir(dirname($path), 0777, true);
+    }
+    if (! is_file($path)) {
+        file_put_contents($path, "<?php\n/* stub plugin */\n");
+    }
+    $GLOBALS['__wp_file_data'][$path] = $headers;
+
+    return $path;
+}
+
+/** Register a theme slug as "installed" for the wp_get_theme() stub. */
+function wpStubSetThemeExists(string $slug, bool $exists = true): void
+{
+    $GLOBALS['__wp_themes'][$slug] = $exists;
 }
 
 function wpStubSetOption(string $name, $value): void
@@ -113,5 +141,24 @@ if (! function_exists('get_file_data')) {
         }
 
         return $out;
+    }
+}
+
+if (! function_exists('wp_get_theme')) {
+    function wp_get_theme($slug = null)
+    {
+        return new class($slug) {
+            private $slug;
+
+            public function __construct($slug)
+            {
+                $this->slug = (string) $slug;
+            }
+
+            public function exists(): bool
+            {
+                return ! empty($GLOBALS['__wp_themes'][$this->slug]);
+            }
+        };
     }
 }

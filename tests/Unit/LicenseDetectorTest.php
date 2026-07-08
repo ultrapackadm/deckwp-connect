@@ -164,4 +164,111 @@ class LicenseDetectorTest extends TestCase
         wpStubSetOption('acme_license_status', 'valid');
         $this->assertTrue($this->detector->isLicensedActive('acme', 'plugin'));
     }
+
+    /* ---- Update URI header signal (WP 6.5+) ---------------------------- */
+
+    public function test_custom_update_uri_off_wporg_is_licensed(): void
+    {
+        wpStubSetPlugins(['acme/acme.php' => ['Name' => 'Acme']]);
+        wpStubSetPluginFileHeaders('acme/acme.php', ['UpdateURI' => 'https://acme.com/updates']);
+
+        $result = $this->detector->detect('acme', 'plugin');
+
+        $this->assertSame('licensed_active', $result['state']);
+        $this->assertSame('update_uri', $result['provider']);
+    }
+
+    public function test_wporg_update_uri_is_NOT_a_license_signal(): void
+    {
+        wpStubSetPlugins(['acme/acme.php' => ['Name' => 'Acme']]);
+        wpStubSetPluginFileHeaders('acme/acme.php', ['UpdateURI' => 'https://wordpress.org/plugins/acme/']);
+
+        $this->assertSame('unknown', $this->detector->detect('acme', 'plugin')['state']);
+    }
+
+    public function test_update_uri_false_or_empty_is_NOT_a_signal(): void
+    {
+        wpStubSetPlugins(['acme/acme.php' => ['Name' => 'Acme']]);
+
+        wpStubSetPluginFileHeaders('acme/acme.php', ['UpdateURI' => 'false']);
+        $this->assertSame('unknown', $this->detector->detect('acme', 'plugin')['state']);
+
+        wpStubSetPluginFileHeaders('acme/acme.php', ['UpdateURI' => '']);
+        $this->assertSame('unknown', $this->detector->detect('acme', 'plugin')['state']);
+    }
+
+    public function test_relative_update_uri_is_NOT_a_signal(): void
+    {
+        // A non-absolute value (e.g. a bare slug) must not read as a custom server.
+        wpStubSetPlugins(['acme/acme.php' => ['Name' => 'Acme']]);
+        wpStubSetPluginFileHeaders('acme/acme.php', ['UpdateURI' => 'acme-plugin']);
+
+        $this->assertSame('unknown', $this->detector->detect('acme', 'plugin')['state']);
+    }
+
+    /* ---- EDD false-positive guards ------------------------------------- */
+
+    public function test_edd_array_form_valid_is_licensed(): void
+    {
+        wpStubSetOption('acme_license_status', ['license' => 'valid']);
+
+        $this->assertSame('licensed_active', $this->detector->detect('acme', 'plugin')['state']);
+    }
+
+    public function test_edd_non_valid_status_is_NOT_licensed(): void
+    {
+        foreach (['expired', 'invalid', 'inactive', 'disabled', ''] as $status) {
+            wpStubReset();
+            wpStubSetOption('acme_license_status', $status);
+
+            $this->assertSame(
+                'unknown',
+                $this->detector->detect('acme', 'plugin')['state'],
+                "status '{$status}' must not read as licensed"
+            );
+        }
+    }
+
+    /* ---- transient false-positive guards ------------------------------- */
+
+    public function test_empty_package_in_transient_is_NOT_a_signal(): void
+    {
+        wpStubSetPlugins(['acme/acme.php' => ['Name' => 'Acme']]);
+        wpStubSetSiteTransient('update_plugins', $this->pluginTransient('acme/acme.php', ''));
+
+        $this->assertSame('unknown', $this->detector->detect('acme', 'plugin')['state']);
+    }
+
+    public function test_update_for_a_different_slug_does_not_bleed(): void
+    {
+        wpStubSetPlugins([
+            'acme/acme.php' => ['Name' => 'Acme'],
+            'other/other.php' => ['Name' => 'Other'],
+        ]);
+        // The external update is for "other", not "acme".
+        wpStubSetSiteTransient('update_plugins', $this->pluginTransient(
+            'other/other.php',
+            'https://vendor.com/other-pro.zip'
+        ));
+
+        $this->assertSame('unknown', $this->detector->detect('acme', 'plugin')['state']);
+        $this->assertSame('licensed_active', $this->detector->detect('other', 'plugin')['state']);
+    }
+
+    /* ---- malformed input must not crash or false-positive -------------- */
+
+    public function test_empty_slug_is_unknown(): void
+    {
+        $this->assertSame('unknown', $this->detector->detect('', 'plugin')['state']);
+    }
+
+    public function test_malformed_freemius_accounts_is_unknown(): void
+    {
+        wpStubSetOption('fs_accounts', 'not-an-array');
+        $this->assertSame('unknown', $this->detector->detect('acme', 'plugin')['state']);
+
+        wpStubReset();
+        wpStubSetOption('fs_accounts', ['sites' => 'garbage']);
+        $this->assertSame('unknown', $this->detector->detect('acme', 'plugin')['state']);
+    }
 }
