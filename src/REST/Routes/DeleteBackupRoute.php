@@ -38,7 +38,7 @@ class DeleteBackupRoute
     /** @var BackupManager */
     private $backupManager;
 
-    public function __construct(BackupManager $backupManager = null)
+    public function __construct(?BackupManager $backupManager = null)
     {
         $this->backupManager = $backupManager ?? new BackupManager();
     }

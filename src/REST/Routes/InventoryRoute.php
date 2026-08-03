@@ -54,8 +54,8 @@ class InventoryRoute
     private $themeInventory;
 
     public function __construct(
-        PluginInventory $inventory = null,
-        ThemeInventory $themeInventory = null
+        ?PluginInventory $inventory = null,
+        ?ThemeInventory $themeInventory = null
     ) {
         $this->inventory = $inventory ?? new PluginInventory();
         $this->themeInventory = $themeInventory ?? new ThemeInventory();

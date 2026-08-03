@@ -104,11 +104,11 @@ class Scheduler
     private $themeInventory;
 
     public function __construct(
-        Settings $settings = null,
-        Signer $signer = null,
-        ApiClient $http = null,
-        PluginInventory $inventory = null,
-        ThemeInventory $themeInventory = null
+        ?Settings $settings = null,
+        ?Signer $signer = null,
+        ?ApiClient $http = null,
+        ?PluginInventory $inventory = null,
+        ?ThemeInventory $themeInventory = null
     ) {
         $this->settings       = $settings ?? new Settings();
         $this->signer         = $signer ?? new Signer();

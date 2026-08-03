@@ -75,10 +75,10 @@ class Scheduler
     private $scanner;
 
     public function __construct(
-        Settings $settings = null,
-        Signer $signer = null,
-        ApiClient $http = null,
-        Scanner $scanner = null
+        ?Settings $settings = null,
+        ?Signer $signer = null,
+        ?ApiClient $http = null,
+        ?Scanner $scanner = null
     ) {
         $this->settings = $settings ?? new Settings();
         $this->signer   = $signer ?? new Signer();

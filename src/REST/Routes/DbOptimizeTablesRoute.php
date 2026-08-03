@@ -60,7 +60,7 @@ class DbOptimizeTablesRoute
     /** @var Optimizer */
     private $optimizer;
 
-    public function __construct(Optimizer $optimizer = null)
+    public function __construct(?Optimizer $optimizer = null)
     {
         $this->optimizer = $optimizer ?? new Optimizer();
     }

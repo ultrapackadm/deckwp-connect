@@ -60,7 +60,7 @@ class SiteHealthRoute
     /** @var Runner */
     private $runner;
 
-    public function __construct(Runner $runner = null)
+    public function __construct(?Runner $runner = null)
     {
         $this->runner = $runner ?? new Runner();
     }

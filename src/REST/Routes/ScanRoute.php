@@ -45,7 +45,7 @@ class ScanRoute
     /** @var ScanScheduler */
     private $scheduler;
 
-    public function __construct(ScanScheduler $scheduler = null)
+    public function __construct(?ScanScheduler $scheduler = null)
     {
         $this->scheduler = $scheduler ?? new ScanScheduler();
     }
