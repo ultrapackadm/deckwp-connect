@@ -72,7 +72,7 @@ class BootstrapPairingRoute
     /** @var PairingHandler */
     private $handler;
 
-    public function __construct(PairingHandler $handler = null)
+    public function __construct(?PairingHandler $handler = null)
     {
         $this->handler = $handler ?? new PairingHandler();
     }

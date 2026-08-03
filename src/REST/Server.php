@@ -192,26 +192,26 @@ class Server
     private $bootstrapPairingRoute;
 
     public function __construct(
-        HmacVerifier $verifier = null,
-        ScanRoute $scanRoute = null,
-        InstallBatchRoute $installBatchRoute = null,
-        RestoreBackupRoute $restoreBackupRoute = null,
-        BackupOffsiteUploadRoute $backupOffsiteUploadRoute = null,
-        DeleteBackupRoute $deleteBackupRoute = null,
-        InventoryRoute $inventoryRoute = null,
-        SsoLoginRoute $ssoLoginRoute = null,
-        MaintenanceRoute $maintenanceRoute = null,
-        BackupCreateRoute $backupCreateRoute = null,
-        SetManagedSlugsRoute $setManagedSlugsRoute = null,
-        WhitelabelRoute $whitelabelRoute = null,
-        PluginToggleRoute $pluginToggleRoute = null,
-        ThemeSwitchRoute $themeSwitchRoute = null,
-        ThemeDeleteRoute $themeDeleteRoute = null,
-        SiteHealthRoute $siteHealthRoute = null,
-        DbScanRoute $dbScanRoute = null,
-        DbCleanupRoute $dbCleanupRoute = null,
-        DbOptimizeTablesRoute $dbOptimizeTablesRoute = null,
-        BootstrapPairingRoute $bootstrapPairingRoute = null
+        ?HmacVerifier $verifier = null,
+        ?ScanRoute $scanRoute = null,
+        ?InstallBatchRoute $installBatchRoute = null,
+        ?RestoreBackupRoute $restoreBackupRoute = null,
+        ?BackupOffsiteUploadRoute $backupOffsiteUploadRoute = null,
+        ?DeleteBackupRoute $deleteBackupRoute = null,
+        ?InventoryRoute $inventoryRoute = null,
+        ?SsoLoginRoute $ssoLoginRoute = null,
+        ?MaintenanceRoute $maintenanceRoute = null,
+        ?BackupCreateRoute $backupCreateRoute = null,
+        ?SetManagedSlugsRoute $setManagedSlugsRoute = null,
+        ?WhitelabelRoute $whitelabelRoute = null,
+        ?PluginToggleRoute $pluginToggleRoute = null,
+        ?ThemeSwitchRoute $themeSwitchRoute = null,
+        ?ThemeDeleteRoute $themeDeleteRoute = null,
+        ?SiteHealthRoute $siteHealthRoute = null,
+        ?DbScanRoute $dbScanRoute = null,
+        ?DbCleanupRoute $dbCleanupRoute = null,
+        ?DbOptimizeTablesRoute $dbOptimizeTablesRoute = null,
+        ?BootstrapPairingRoute $bootstrapPairingRoute = null
     ) {
         $this->verifier              = $verifier ?? new HmacVerifier();
         $this->scanRoute             = $scanRoute ?? new ScanRoute();

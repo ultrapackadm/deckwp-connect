@@ -54,7 +54,7 @@ class InstallBatchRoute
     /** @var Installer */
     private $installer;
 
-    public function __construct(Installer $installer = null)
+    public function __construct(?Installer $installer = null)
     {
         $this->installer = $installer ?? new Installer();
     }

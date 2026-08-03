@@ -52,7 +52,7 @@ class MaintenanceGuard
     /** @var MaintenanceManager */
     private $manager;
 
-    public function __construct(MaintenanceManager $manager = null)
+    public function __construct(?MaintenanceManager $manager = null)
     {
         $this->manager = $manager ?? new MaintenanceManager();
     }

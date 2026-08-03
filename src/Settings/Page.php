@@ -77,9 +77,9 @@ class Page
     private $heartbeat;
 
     public function __construct(
-        SettingsStore $settings = null,
-        PairingHandler $pairing = null,
-        HeartbeatScheduler $heartbeat = null
+        ?SettingsStore $settings = null,
+        ?PairingHandler $pairing = null,
+        ?HeartbeatScheduler $heartbeat = null
     ) {
         $this->settings  = $settings ?? new SettingsStore();
         $this->pairing   = $pairing ?? new PairingHandler();

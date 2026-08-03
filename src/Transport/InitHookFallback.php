@@ -121,7 +121,7 @@ class InitHookFallback
     /** @var HmacVerifier */
     private $verifier;
 
-    public function __construct(HmacVerifier $verifier = null)
+    public function __construct(?HmacVerifier $verifier = null)
     {
         $this->verifier = $verifier ?? new HmacVerifier();
     }

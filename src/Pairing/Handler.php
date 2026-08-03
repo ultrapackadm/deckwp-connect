@@ -59,9 +59,9 @@ class Handler
     private $signer;
 
     public function __construct(
-        ApiClient $http = null,
-        Settings $settings = null,
-        Signer $signer = null
+        ?ApiClient $http = null,
+        ?Settings $settings = null,
+        ?Signer $signer = null
     ) {
         $this->http     = $http ?? new ApiClient();
         $this->settings = $settings ?? new Settings();

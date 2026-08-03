@@ -62,7 +62,7 @@ class DbScanRoute
     /** @var Scanner */
     private $scanner;
 
-    public function __construct(Scanner $scanner = null)
+    public function __construct(?Scanner $scanner = null)
     {
         $this->scanner = $scanner ?? new Scanner();
     }

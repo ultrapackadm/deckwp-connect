@@ -4,6 +4,24 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.39.1] - 2026-08-03
+
+### Fixed
+
+- **PHP 8.4 deprecation notices on every plugin boot.** 58 constructor
+  parameters across 24 classes were written as `Foo $bar = null`, which
+  PHP 8.4 deprecates ("Implicitly marking parameter as nullable is
+  deprecated") and PHP 9 will reject outright. On a host running 8.4
+  with `WP_DEBUG_DISPLAY` on, these notices printed on every request
+  that booted the connector — including REST responses, where leading
+  output corrupts the JSON body. All 58 are now explicitly `?Foo $bar =
+  null`.
+
+  No behaviour changes: `?Type` has been valid since PHP 7.1 and the
+  plugin's floor is 7.4, so this does not move the compatibility floor.
+  Verified against a live PHP 8.4.19 install — 21 notices before, zero
+  after — with the HMAC channel re-tested end to end afterwards.
+
 ## [0.39.0] - 2026-07-07
 
 ### Added

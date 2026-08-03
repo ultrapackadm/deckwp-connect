@@ -84,7 +84,7 @@ class SelfUpdater
     /** @var Settings */
     private $settings;
 
-    public function __construct(Signer $signer = null, Settings $settings = null)
+    public function __construct(?Signer $signer = null, ?Settings $settings = null)
     {
         $this->signer   = $signer   ?? new Signer();
         $this->settings = $settings ?? new Settings();

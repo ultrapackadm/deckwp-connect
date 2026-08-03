@@ -45,7 +45,7 @@ class ThemeInventory
     /** @var LicenseDetector */
     private $licenseDetector;
 
-    public function __construct(LicenseDetector $licenseDetector = null)
+    public function __construct(?LicenseDetector $licenseDetector = null)
     {
         $this->licenseDetector = $licenseDetector ?? new LicenseDetector();
     }

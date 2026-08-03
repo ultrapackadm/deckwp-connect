@@ -49,7 +49,7 @@ class DbCleanupRoute
     /** @var Cleaner */
     private $cleaner;
 
-    public function __construct(Cleaner $cleaner = null)
+    public function __construct(?Cleaner $cleaner = null)
     {
         $this->cleaner = $cleaner ?? new Cleaner();
     }

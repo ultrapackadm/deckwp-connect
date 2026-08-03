@@ -101,9 +101,9 @@ class Installer
     private $licenseDetector;
 
     public function __construct(
-        BackupManager $backupManager = null,
-        PostUpdateChecker $smokeChecker = null,
-        LicenseDetector $licenseDetector = null
+        ?BackupManager $backupManager = null,
+        ?PostUpdateChecker $smokeChecker = null,
+        ?LicenseDetector $licenseDetector = null
     ) {
         $this->backupManager   = $backupManager ?? new BackupManager();
         $this->smokeChecker    = $smokeChecker ?? new PostUpdateChecker();
