@@ -34,6 +34,11 @@ use DeckWP\Connect\Smoke\PostUpdateChecker;
  *       ['slug' => '...', 'status' => 'installed'|'unchanged'|'failed'|'rolled_back',
  *        'version_before' => '5.2.0', 'version_after' => '5.4.0',
  *        'error' => null,
+ *        // Themes only: the stylesheet directory on disk, which is
+ *        // not always the slug that was requested. The dashboard
+ *        // needs it to recognize the row its next inventory reports
+ *        // as the item it just installed.
+ *        'installed_slug' => 'citadela-theme',
  *        // Read back from WordPress after the operation, so the
  *        // dashboard settles on what the site actually does rather
  *        // than on what the update was supposed to achieve.
@@ -938,10 +943,14 @@ class Installer
         }
 
         // `install()` returns true on success, null/false on failure
-        // without a WP_Error (rare — usually means the unzip phase
-        // bailed silently because of FS permissions).
+        // without a WP_Error. The reason is not lost — it's in the
+        // skin — so ask rather than guess. See
+        // {@see self::describeSilentUpgraderFailure()}.
         if ($result !== true) {
-            return $this->failure($slug, 'Plugin_Upgrader::install() returned a non-truthy result without a WP_Error — usually a filesystem-permissions issue. Check wp-content/plugins/ is writable by the web user.');
+            return $this->failure(
+                $slug,
+                $this->describeSilentUpgraderFailure($upgrader, 'Plugin_Upgrader::install()', 'wp-content/plugins/')
+            );
         }
 
         // Verify the plugin actually landed on disk before reporting
@@ -1346,7 +1355,10 @@ class Installer
         }
 
         if ($result !== true) {
-            return $this->failure($slug, 'Theme_Upgrader::install() returned a non-truthy result without a WP_Error — usually a filesystem-permissions issue. Check wp-content/themes/ is writable by the web user.');
+            return $this->failure(
+                $slug,
+                $this->describeSilentUpgraderFailure($upgrader, 'Theme_Upgrader::install()', 'wp-content/themes/')
+            );
         }
 
         $stylesheet = $this->findThemeStylesheet($slug);
@@ -1392,6 +1404,19 @@ class Installer
     ): array {
         $row = [
             'slug'           => $slug,
+            // The directory WordPress actually put the theme in.
+            //
+            // `slug` echoes back what the dashboard asked for, which
+            // for themes is frequently not the folder name on disk:
+            // findThemeStylesheet() matches on stylesheet directory OR
+            // TextDomain precisely because a theme ZIP often extracts
+            // to a folder named after something other than the catalog
+            // entry. We resolved the real name to do the install and
+            // then dropped it, so the dashboard had no way to connect
+            // what it asked for to what its next inventory would
+            // report — and a premium theme silently re-registered
+            // itself as an ordinary wordpress.org one.
+            'installed_slug' => $stylesheet,
             'status'         => $status,
             'version_before' => $beforeVersion,
             'version_after'  => $afterVersion,
@@ -1421,6 +1446,74 @@ class Installer
             : sprintf('switch_theme(%s) did not take effect — active stylesheet is now %s.', $stylesheet, $current ?: 'unknown');
 
         return $row;
+    }
+
+    /**
+     * Explain a `WP_Upgrader::install()` that came back non-truthy
+     * without raising a WP_Error.
+     *
+     * Both call sites used to answer this with the same sentence:
+     * "usually a filesystem-permissions issue. Check <dir> is writable
+     * by the web user." That is one cause among several, and it is not
+     * the most common one — a package that downloaded as an HTML error
+     * page, a ZIP whose contents WordPress rejects ("Incompatible
+     * Archive"), and a destination folder that already exists all land
+     * here too. Operators were being sent to chmod for problems chmod
+     * cannot fix, and the ones that really were permissions got no
+     * more evidence than the ones that weren't.
+     *
+     * WordPress does record the reason, just not in the return value:
+     * the skin accumulates it. `$skin->result` holds a WP_Error when
+     * one was raised internally and swallowed, and
+     * `get_upgrade_messages()` holds the human-readable trail
+     * ("Downloading installation package…", "Unpacking the package…",
+     * "Incompatible Archive."). We report the last message, which is
+     * the step that failed, and keep the permissions hint as the
+     * fallback for when the skin genuinely knows nothing.
+     *
+     * @param  \WP_Upgrader  $upgrader
+     * @param  string        $call       e.g. "Plugin_Upgrader::install()"
+     * @param  string        $writeDir   directory to name in the fallback hint
+     */
+    private function describeSilentUpgraderFailure($upgrader, string $call, string $writeDir): string
+    {
+        $skin = isset($upgrader->skin) ? $upgrader->skin : null;
+
+        // A WP_Error the upgrader raised internally but didn't return.
+        if ($skin !== null && isset($skin->result) && is_wp_error($skin->result)) {
+            return sprintf('%s failed: %s', $call, $this->formatWpError($skin->result));
+        }
+
+        if ($skin !== null && method_exists($skin, 'get_upgrade_messages')) {
+            $messages = $skin->get_upgrade_messages();
+            if (is_array($messages)) {
+                // Strip WP's markup and drop the progress chatter, then
+                // take the last thing it said before giving up.
+                $clean = array_values(array_filter(array_map(
+                    static function ($message) {
+                        return trim(wp_strip_all_tags((string) $message));
+                    },
+                    $messages
+                ), static function ($message) {
+                    return $message !== '';
+                }));
+
+                if ($clean !== []) {
+                    return sprintf(
+                        '%s failed. WordPress reported: %s',
+                        $call,
+                        $clean[count($clean) - 1]
+                    );
+                }
+            }
+        }
+
+        return sprintf(
+            '%s returned a non-truthy result and WordPress recorded no reason. '
+                . 'Check that %s is writable by the web user and that the package is a valid ZIP.',
+            $call,
+            $writeDir
+        );
     }
 
     /**
