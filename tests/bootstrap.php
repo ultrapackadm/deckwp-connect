@@ -48,6 +48,10 @@ $GLOBALS['__wp_themes'] = [];
 $GLOBALS['__wp_transients'] = [];
 $GLOBALS['__wp_cron'] = [];
 $GLOBALS['__wp_update_check_responses'] = [];
+$GLOBALS['__wp_active_plugins'] = [];
+$GLOBALS['__wp_network_active_plugins'] = [];
+$GLOBALS['__wp_activation_results'] = [];
+$GLOBALS['__wp_activation_calls'] = [];
 
 /** Reset all stub state — call in each test's setUp(). */
 function wpStubReset(): void
@@ -62,6 +66,10 @@ function wpStubReset(): void
     $GLOBALS['__wp_transients'] = [];
     $GLOBALS['__wp_cron'] = [];
     $GLOBALS['__wp_update_check_responses'] = [];
+    $GLOBALS['__wp_active_plugins'] = [];
+    $GLOBALS['__wp_network_active_plugins'] = [];
+    $GLOBALS['__wp_activation_results'] = [];
+    $GLOBALS['__wp_activation_calls'] = [];
 }
 
 /** Queue a cron event for the wp_next_scheduled()/wp_clear_scheduled_hook() stubs. */
@@ -152,6 +160,48 @@ function wpStubSetUpdateCheckResponses(array $responses): void
 function wpStubHttpEvent($response, string $url): array
 {
     return ['__stub_http_event' => true, 'response' => $response, 'url' => $url];
+}
+
+/**
+ * Seed the active-plugin set.
+ *
+ * @param array<int, string> $active        Plugin files that are active.
+ * @param array<int, string> $networkActive Subset that is network-active.
+ */
+function wpStubSetActivePlugins(array $active, array $networkActive = []): void
+{
+    $GLOBALS['__wp_active_plugins'] = array_values($active);
+    $GLOBALS['__wp_network_active_plugins'] = array_values($networkActive);
+}
+
+/**
+ * Decide what `activate_plugin()` does for a given plugin file.
+ *
+ * Three outcomes matter, because the connector distinguishes them:
+ *   - `true`      activation takes (the plugin joins the active set)
+ *   - a WP_Error  activation is refused, message surfaces to the dashboard
+ *   - `'noop'`    returns null and the plugin STAYS inactive — WordPress's
+ *                 nastiest shape, since "no error" reads as success
+ *
+ * @param mixed $result
+ */
+function wpStubSetActivationResult(string $pluginFile, $result): void
+{
+    $GLOBALS['__wp_activation_results'][$pluginFile] = $result;
+}
+
+/**
+ * Every `activate_plugin()` call, in order, with the arguments it got.
+ *
+ * The connector reactivates SILENTLY and preserves network scope on
+ * purpose (see Installer::restoreActiveState) — both are contract, not
+ * detail, so tests need to see the arguments and not just the outcome.
+ *
+ * @return array<int, array{file: string, network_wide: bool, silent: bool}>
+ */
+function wpStubActivationCalls(): array
+{
+    return $GLOBALS['__wp_activation_calls'];
 }
 
 // --- WP function stubs (only defined if WP itself isn't loaded) ----------
@@ -421,6 +471,62 @@ if (! function_exists('wp_schedule_event')) {
         $GLOBALS['__wp_cron'][$hook] = (int) $timestamp;
 
         return true;
+    }
+}
+
+if (! function_exists('is_plugin_active')) {
+    function is_plugin_active($pluginFile)
+    {
+        return in_array($pluginFile, $GLOBALS['__wp_active_plugins'], true);
+    }
+}
+
+if (! function_exists('is_plugin_active_for_network')) {
+    function is_plugin_active_for_network($pluginFile)
+    {
+        return in_array($pluginFile, $GLOBALS['__wp_network_active_plugins'], true);
+    }
+}
+
+if (! function_exists('activate_plugin')) {
+    /**
+     * Stub of core's `activate_plugin()`.
+     *
+     * Core returns null on success, null when the plugin was already
+     * active (having done nothing), or a WP_Error. It never returns
+     * true — so neither does this, and a test that seeds `true` is
+     * asking for "the activation takes", not for a return value.
+     */
+    function activate_plugin($pluginFile, $redirect = '', $networkWide = false, $silent = false)
+    {
+        $GLOBALS['__wp_activation_calls'][] = [
+            'file' => $pluginFile,
+            'network_wide' => (bool) $networkWide,
+            'silent' => (bool) $silent,
+        ];
+
+        // Already active: core short-circuits without touching state.
+        if (in_array($pluginFile, $GLOBALS['__wp_active_plugins'], true)) {
+            return null;
+        }
+
+        $outcome = isset($GLOBALS['__wp_activation_results'][$pluginFile])
+            ? $GLOBALS['__wp_activation_results'][$pluginFile]
+            : true;
+
+        if (is_wp_error($outcome)) {
+            return $outcome;
+        }
+
+        // 'noop' = returns clean and leaves the plugin inactive.
+        if ($outcome !== 'noop') {
+            $GLOBALS['__wp_active_plugins'][] = $pluginFile;
+            if ($networkWide) {
+                $GLOBALS['__wp_network_active_plugins'][] = $pluginFile;
+            }
+        }
+
+        return null;
     }
 }
 

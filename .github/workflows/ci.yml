@@ -1,0 +1,140 @@
+# Lint + test every push and pull request.
+#
+# ## Why this exists
+#
+# `release.yml` runs `php -l` on a tag push, which means a parse error
+# is caught at release time — after the code is already on main. The
+# test suite was never run by CI at all: it ran when someone remembered
+# to run it, which is not a gate, it is a habit.
+#
+# The connector is the half of DeckWP that lives on a customer's
+# server. A broken release there does not show up as a failed deploy
+# we roll back; it shows up as somebody's site with a fatal error in
+# wp-admin, and the connector is the only remote recovery path we have
+# into that site. That asymmetry is why this runs on every push and
+# not just before a release.
+#
+# ## Matrix
+#
+# 7.4 is the compatibility floor (see CLAUDE.md — many shared hosts
+# are still there, and raising it costs market share). 8.3 is what
+# Forge and most modern managed hosts run. Testing only the floor
+# would miss deprecations that are fatal on 8.x; testing only 8.x
+# would let `?->`, named arguments, or a typed property slip in and
+# fatal on 7.4, where nobody would find it until a customer did.
+# Everything between the two ends is covered by the ends themselves
+# for a codebase this size.
+#
+# ## What is deliberately NOT a gate
+#
+# `phpcs` (WPCS). CLAUDE.md asks for it before commit and that stands,
+# but the repo carries thousands of pre-existing violations from
+# before the standard was adopted. Turning it on as a gate today would
+# fail every PR for reasons unrelated to the PR, which trains people
+# to ignore red CI — worse than no check. Making it a gate needs a
+# baseline file first; that is its own piece of work, not a line in
+# this file.
+
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: PHP ${{ matrix.php }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      # Run both versions to completion. A 7.4-only failure and an
+      # 8.3-only failure are different bugs and we want to see both
+      # in one run rather than one per push.
+      fail-fast: false
+      matrix:
+        php: ['7.4', '8.3']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          coverage: none
+          tools: none
+
+      - name: PHP syntax check
+        run: |
+          # Same lint release.yml runs, moved earlier in the lifecycle.
+          # `tests` is included here but not there: the release ZIP
+          # excludes tests via .gitattributes, so a parse error in a
+          # test file cannot break a release — but it does break CI
+          # in a way that looks like a product failure, so catch it
+          # with the cheap check instead of a confusing PHPUnit crash.
+          find src tests deckwp-connect.php -name "*.php" -print0 \
+            | xargs -0 -n1 -P 4 php -l
+          echo "PHP syntax OK on PHP ${{ matrix.php }}"
+
+      - name: Validate composer.json
+        run: composer validate --strict
+
+      - name: Cache Composer packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache
+          key: composer-${{ matrix.php }}-${{ hashFiles('composer.json') }}
+          restore-keys: composer-${{ matrix.php }}-
+
+      - name: Install dependencies
+        # No composer.lock is committed (this is a distributed
+        # WordPress plugin, not an application — the lock file would
+        # only pin dev tooling), so this resolves fresh each run.
+        # --prefer-dist keeps it fast; the cache above keeps it faster.
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Run tests
+        run: vendor/bin/phpunit --colors=never
+
+  crlf:
+    name: Line endings
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Reject CRLF in committed files
+        run: |
+          # v0.40.0 was tagged from a commit where a Windows tool had
+          # rewritten the entrypoint to CRLF. The release workflow
+          # reads the version with awk, `$NF` came back as `0.40.0\r`,
+          # and the tag-vs-header comparison failed with an error
+          # message that rendered across two lines and read as
+          # nonsense. .gitattributes normalizes on commit now, which
+          # is the real fix — this is the check that proves it stayed
+          # fixed.
+          #
+          # `git ls-files --eol` rather than grepping for CR: it
+          # reports the INDEX eol (`i/lf`, `i/crlf`, `i/mixed`), which
+          # is what ends up in the release ZIP. Grepping the working
+          # tree would answer a different question — and answer it
+          # unreliably, since a checkout can legitimately hold CRLF
+          # for a file whose blob is LF.
+          BAD=$(git ls-files --eol | awk '$1 ~ /^i\/(crlf|mixed)$/ {print $NF}')
+
+          if [ -n "$BAD" ]; then
+            echo "::error::These files have CRLF committed to the index:"
+            echo "$BAD"
+            echo ""
+            echo "Fix with:  git add --renormalize . && git commit"
+            exit 1
+          fi
+
+          echo "All $(git ls-files | wc -l) tracked files are LF in the index."
