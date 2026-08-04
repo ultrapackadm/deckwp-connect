@@ -74,7 +74,7 @@ jobs:
           echo "Releasing $TAG (version $VERSION)"
 
       - name: Checkout at tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: ${{ steps.ref.outputs.tag }}
           fetch-depth: 0
