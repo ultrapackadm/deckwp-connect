@@ -103,13 +103,24 @@ jobs:
           # DECKWP_CONNECT_VERSION define. Both must match the tag,
           # otherwise the connector self-updater would compare against
           # the wrong source-of-truth.
+          # `tr -d '\r'` because awk's default field splitting does not
+          # treat CR as whitespace, so on a CRLF file $NF comes back as
+          # `0.40.0\r` and the comparison below fails with an error
+          # message that renders as two lines and looks like nonsense:
+          #
+          #     Plugin header Version='0.40.0
+          #     ' does not match tag '0.40.0'
+          #
+          # That is what happened to the first v0.40.0 tag. .gitattributes
+          # now normalizes to LF on commit, which is the real fix; this
+          # strip is the second line of defence, and it costs nothing.
           # Header line:  ` * Version:           X.Y.Z`
-          HEADER_VER=$(awk '/^[[:space:]]*\*[[:space:]]*Version:/{print $NF}' deckwp-connect.php)
+          HEADER_VER=$(awk '/^[[:space:]]*\*[[:space:]]*Version:/{print $NF}' deckwp-connect.php | tr -d '\r')
           # Define line:  `define('DECKWP_CONNECT_VERSION',  'X.Y.Z');`
           # The regex anchors on `define(` so the duplicate-load guard
           # line (`if (defined('DECKWP_CONNECT_VERSION')) {`) — which
           # also contains the constant name — doesn't match.
-          DEFINE_VER=$(awk -F"'" '/define\(.DECKWP_CONNECT_VERSION/{print $4}' deckwp-connect.php)
+          DEFINE_VER=$(awk -F"'" '/define\(.DECKWP_CONNECT_VERSION/{print $4}' deckwp-connect.php | tr -d '\r')
 
           if [ "$HEADER_VER" != "$TAG_VER" ]; then
             echo "::error::Plugin header Version='$HEADER_VER' does not match tag '$TAG_VER'"

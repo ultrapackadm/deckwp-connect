@@ -1,3 +1,25 @@
+# Line endings: LF in the repository, always.
+#
+# This plugin is developed on Windows, where any tool that rewrites a
+# file in text mode (Python's `write_text`, PowerShell's `Out-File`,
+# most editors on their default settings) silently converts the whole
+# file to CRLF. That is not cosmetic here: the release workflow reads
+# the version out of `deckwp-connect.php` with awk and compares it to
+# the tag, and a trailing `\r` makes `0.40.0` != `0.40.0`. The v0.40.0
+# release failed on exactly that, having been tagged from a commit
+# where one such rewrite had flipped the entrypoint to CRLF.
+#
+# These rules make git normalize on commit, so the blob is LF no matter
+# what the working tree looks like. (The workflow also strips CR now —
+# belt and braces, because the ZIP is built from the repo but the
+# checkout is not the only way a CR can reach it.)
+*.php    text eol=lf
+*.txt    text eol=lf
+*.md     text eol=lf
+*.yml    text eol=lf
+*.json   text eol=lf
+*.dist   text eol=lf
+
 # Files excluded from `git archive` (release ZIP builds).
 #
 # The `.github/workflows/release.yml` workflow runs
