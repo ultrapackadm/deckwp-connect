@@ -6,6 +6,7 @@ defined('ABSPATH') || exit;
 
 use DeckWP\Connect\HMAC\Signer;
 use DeckWP\Connect\HTTP\ApiClient;
+use DeckWP\Connect\Pairing\Teardown;
 use DeckWP\Connect\Storage\Settings;
 
 /**
@@ -28,12 +29,17 @@ use DeckWP\Connect\Storage\Settings;
  * filter at the value of `scan_seconds` from the settings option
  * (default 86400 = daily, server-issued during pair).
  *
- * Schedule is installed on `init` whenever the connector is paired
- * AND the constant `DECKWP_CONNECT_ENABLE_SCAN` is `true`. Default
- * disabled — flip the constant once the dashboard's
- * `scan_completed` ingest is live.
+ * Schedule is installed on `init` whenever the connector is paired,
+ * and immediately at the end of the handshake by
+ * {@see \DeckWP\Connect\Pairing\Setup}.
  *
- *     define( 'DECKWP_CONNECT_ENABLE_SCAN', true );
+ * Like the heartbeat, this used to be gated behind a constant that
+ * defaulted to OFF and that nothing ever defined — so no install
+ * anywhere ran a scheduled scan. The dashboard's `scan_completed`
+ * ingest has been live for a long time; the constant is now an
+ * opt-OUT, honoured only when defined and falsy:
+ *
+ *     define( 'DECKWP_CONNECT_ENABLE_SCAN', false );
  *
  * ## 401 self-cleanup
  *
@@ -74,16 +80,21 @@ class Scheduler
     /** @var Scanner */
     private $scanner;
 
+    /** @var Teardown */
+    private $teardown;
+
     public function __construct(
         ?Settings $settings = null,
         ?Signer $signer = null,
         ?ApiClient $http = null,
-        ?Scanner $scanner = null
+        ?Scanner $scanner = null,
+        ?Teardown $teardown = null
     ) {
         $this->settings = $settings ?? new Settings();
         $this->signer   = $signer ?? new Signer();
         $this->http     = $http ?? new ApiClient();
         $this->scanner  = $scanner ?? new Scanner();
+        $this->teardown = $teardown ?? new Teardown();
     }
 
     /**
@@ -123,7 +134,7 @@ class Scheduler
     /**
      * Schedule the cron event when:
      *   1. Connector is paired (we have a callback_url + secret).
-     *   2. The DECKWP_CONNECT_ENABLE_SCAN constant is truthy.
+     *   2. The site hasn't opted out via DECKWP_CONNECT_ENABLE_SCAN.
      *   3. No event of this type is already queued.
      *
      * Mirrors the heartbeat scheduler's gating logic.
@@ -223,9 +234,7 @@ class Scheduler
         // Same 401 self-cleanup the heartbeat scheduler does. A 401
         // here means the dashboard revoked us — clear local state so
         // the WP admin catches up to the unpaired view, just like
-        // the heartbeat path. Calling into the heartbeat scheduler's
-        // helper would couple the two unnecessarily; we duplicate
-        // the small amount of revoke logic here for independence.
+        // the heartbeat path.
         if ((int) ($result['status'] ?? 0) === 401) {
             $this->handleRevoke();
             $result['error'] = 'Dashboard revoked this connection — local state has been cleared. Re-pair from the dashboard if you want to reconnect.';
@@ -241,30 +250,24 @@ class Scheduler
     }
 
     /**
-     * Mirror of {@see \DeckWP\Connect\Heartbeat\Scheduler::handleRevoke()}
-     * so a 401 on a scan push has the same operator-facing
-     * outcome as a 401 on a heartbeat push.
+     * A 401 on a scan push means the same thing as a 401 on a
+     * heartbeat push, so it has to leave the site in the same state.
+     * This used to be a hand-copied mirror of the heartbeat version
+     * "for independence"; both now call {@see Teardown}, which is the
+     * only way the two can be guaranteed to agree.
      */
     private function handleRevoke(): void
     {
-        $platformUrl = (string) $this->settings->get('platform_url', '');
-
-        $this->settings->clearConnection();
-
-        $ttl = defined('DAY_IN_SECONDS') ? DAY_IN_SECONDS : 86400;
-        set_transient('deckwp_connect_revoke_notice', [
-            'platform_url' => $platformUrl,
-            'revoked_at'   => time(),
-        ], $ttl);
-
-        if (function_exists('error_log')) {
-            error_log('[deckwp-connect] connection revoked by dashboard (scan returned 401) — local state cleared');
-        }
+        $this->teardown->run('scan_401');
     }
 
+    /**
+     * On unless the site explicitly turns it off — mirror of
+     * {@see \DeckWP\Connect\Heartbeat\Scheduler::isHeartbeatEnabled()}.
+     */
     private function isScanEnabled(): bool
     {
-        return defined('DECKWP_CONNECT_ENABLE_SCAN') && DECKWP_CONNECT_ENABLE_SCAN;
+        return ! defined('DECKWP_CONNECT_ENABLE_SCAN') || DECKWP_CONNECT_ENABLE_SCAN;
     }
 
     /**

@@ -157,9 +157,24 @@ jobs:
           # turn on printing when we hit the section header, turn it off
           # when we hit the NEXT section header (which marks the start
           # of the previous version's entry).
+          #
+          # The header test is a substring comparison, not a regex, and
+          # that is deliberate. It used to be
+          #
+          #     $0 ~ "^## \\[" v "\\]"
+          #
+          # which never matched anything. Inside the single-quoted awk
+          # program the shell passes `\\[` through as `\[`; awk then
+          # parses that as a *string literal*, where `\[` is not a
+          # recognised escape and collapses to a bare `[`. The regex
+          # actually compiled was `^## [0.39.1]` — a character class —
+          # so every release from the one that introduced this step
+          # onward published with the "See CHANGELOG.md" fallback body
+          # instead of its notes. Comparing strings has no escaping
+          # layers to get wrong.
           VERSION="${{ steps.ref.outputs.version }}"
           awk -v v="$VERSION" '
-            $0 ~ "^## \\[" v "\\]" { p=1; next }
+            substr($0, 1, length("## [" v "]")) == "## [" v "]" { p=1; next }
             p && /^## \[/ { exit }
             p { print }
           ' CHANGELOG.md > release-notes.md

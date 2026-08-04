@@ -14,6 +14,7 @@ defined('ABSPATH') || exit;
  *
  *     [
  *         'slug'             => 'avada-child',        // stylesheet dir name
+ *         'wporg_slug'       => null,                 // set when wp.org knows it
  *         'name'             => 'Avada Child',
  *         'version'          => '1.0',
  *         'active'           => true,
@@ -44,6 +45,14 @@ class ThemeInventory
 {
     /** @var LicenseDetector */
     private $licenseDetector;
+
+    /**
+     * Stylesheet slugs wordpress.org confirmed it knows about, as a set.
+     * Filled as a side effect of {@see self::updatePayload()}.
+     *
+     * @var array<string, bool>
+     */
+    private $wpOrgSlugs = [];
 
     public function __construct(?LicenseDetector $licenseDetector = null)
     {
@@ -94,6 +103,7 @@ class ThemeInventory
 
             $rows[] = [
                 'slug'             => $slug,
+                'wporg_slug'       => isset($this->wpOrgSlugs[$slug]) ? $slug : null,
                 'name'             => $name,
                 'version'          => $version,
                 'active'           => $slug === $activeSlug,
@@ -146,6 +156,17 @@ class ThemeInventory
         // keyed by theme slug.
         $transient = get_site_transient('update_themes');
 
+        // Harvest the directory membership set before the `response`
+        // guard. A theme that is already current has no `response`
+        // entry — it sits in `no_update` — and treating that absence as
+        // "wordpress.org has never heard of this theme" is what made
+        // the dashboard try to download artifacts that cannot exist.
+        //
+        // Unlike plugins, the transient is keyed by the stylesheet
+        // directory name, which IS the directory slug. So membership is
+        // the whole answer; there is no separate slug to carry.
+        $this->wpOrgSlugs = $this->harvestWpOrgSlugs($transient);
+
         if (! is_object($transient) || ! isset($transient->response) || ! is_array($transient->response)) {
             return [];
         }
@@ -159,5 +180,37 @@ class ThemeInventory
         }
 
         return $out;
+    }
+
+    /**
+     * Collect every stylesheet slug named by either bucket of the
+     * `update_themes` transient, as a set.
+     *
+     * @param mixed $transient The `update_themes` site transient.
+     *
+     * @return array<string, bool>
+     */
+    private function harvestWpOrgSlugs($transient)
+    {
+        $set = [];
+
+        if (! is_object($transient)) {
+            return $set;
+        }
+
+        foreach (['response', 'no_update'] as $bucket) {
+            if (! isset($transient->$bucket) || ! is_array($transient->$bucket)) {
+                continue;
+            }
+
+            foreach (array_keys($transient->$bucket) as $slug) {
+                $slug = trim((string) $slug);
+                if ($slug !== '') {
+                    $set[$slug] = true;
+                }
+            }
+        }
+
+        return $set;
     }
 }

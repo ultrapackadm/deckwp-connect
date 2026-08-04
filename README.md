@@ -58,9 +58,9 @@ deckwp-connect.php
 DeckWP\Connect\Bootstrap::boot()
    ├─ Settings\Page              admin UI for the pairing handshake
    ├─ Heartbeat\Scheduler        WP-Cron inventory/fatal-log push
-   │                             (gated by DECKWP_CONNECT_ENABLE_HEARTBEAT)
+   │                             (opt out: DECKWP_CONNECT_ENABLE_HEARTBEAT=false)
    ├─ Scan\Scheduler             WP-Cron scan sender
-   │                             (gated by DECKWP_CONNECT_ENABLE_SCAN)
+   │                             (opt out: DECKWP_CONNECT_ENABLE_SCAN=false)
    ├─ REST\Server                deckwp/v1/* routes (HMAC-protected)
    ├─ Updater\UpdateSuppressor   hides "Update available" for dashboard-
    │                             managed slugs so operators can't bypass

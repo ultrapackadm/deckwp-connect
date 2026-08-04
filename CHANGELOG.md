@@ -4,6 +4,129 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.40.0] - 2026-08-04
+
+An end-to-end pass — create an account, pair a site, update plugins and
+themes, roll one back, scan, disconnect — turned up a set of problems
+that shared one root: the connector kept telling the dashboard what an
+operation was *supposed* to do instead of what WordPress actually did.
+This release replaces that inference with read-back facts, and turns on
+two schedulers that had been shipping switched off.
+
+### Fixed
+
+- **The scheduled heartbeat and the scheduled scan never ran. On any
+  site.** Both were gated behind constants (`DECKWP_CONNECT_ENABLE_
+  HEARTBEAT`, `DECKWP_CONNECT_ENABLE_SCAN`) that defaulted to OFF while
+  the dashboard's ingest endpoints were still being built. The
+  endpoints went live long ago; nothing ever defined the constants. The
+  practical effect was that a paired site reported its inventory once —
+  or never — and then went quiet: `last_seen_at` never advanced, plugin
+  lists went stale the moment anything changed on the site, and the
+  only fresh data the dashboard ever saw came from an operator pressing
+  Refresh by hand. Both constants are now **opt-out**, honoured only
+  when defined and falsy:
+
+      define( 'DECKWP_CONNECT_ENABLE_HEARTBEAT', false );
+      define( 'DECKWP_CONNECT_ENABLE_SCAN', false );
+
+- **A freshly paired site showed up on the dashboard with zero plugins
+  and zero themes.** The handshake ended at the credential write and
+  left everything else to a cron tick that might be five minutes out —
+  or, per the item above, never come. Pairing now finishes the job:
+  `Pairing\Setup` schedules both cron events and pushes the first
+  inventory before the pairing screen answers. If that first push
+  can't be delivered the pairing still succeeds, and the settings page
+  says why rather than leaving the operator staring at an empty site.
+
+- **A rollback left the dashboard showing the version it had just
+  rolled back from.** `restore-backup` answered a bare `{"ok": true}`,
+  so the dashboard had nothing to go on but the backup row it had asked
+  us to restore. The response now carries the post-state read back off
+  the install — `installed`, `version`, `active` — after the folder
+  swap and after WordPress's plugin cache is invalidated, which is what
+  made the old read return pre-swap data.
+
+- **A plugin could come back from a restore or a failed update switched
+  off, while the panel went on calling it Active.** Core's upgrader
+  deactivates a plugin before replacing its files and leaves
+  re-activation to an admin page load that never happens for us. The
+  connector now restores the activation state itself — on the success
+  path, on the error path, and again after a rollback — preserving
+  network-wide activation as network-wide. When re-activation genuinely
+  fails, the response says so in `reactivation_error` instead of
+  reporting a clean success over a plugin that is no longer running.
+
+- **The security scan reported three findings on a brand-new WordPress,
+  and all three were wrong.** Each came from treating a textual match
+  as a behavioural one:
+  - the two-line "Silence is golden" `index.php` stub — written by
+    WordPress core, WooCommerce, most hosts, and by DeckWP's own backup
+    directory — was reported as a critical webshell. A PHP file with no
+    executable statement in it is now recognised by parsing it, not by
+    keeping a list of filenames to forgive.
+  - the scanner's own source file was flagged, because its
+    documentation spelled out one of the signatures it looks for. Code
+    inside a comment does not run, and no longer counts as evidence.
+    (Every security plugin that ships a signature list had the same
+    problem.)
+  - `wp-config.php` was reported world-writable at 0666 on Windows,
+    where every writable file reports 0666 because NTFS has no POSIX
+    mode bits. That check now runs only where the answer means
+    something.
+
+  None of this is fixed by exempting DeckWP's own files — the
+  connector's directory is still scanned like any other plugin's,
+  because "the attacker hid it in the security plugin's folder" is a
+  real thing that happens.
+
+- **"All up to date" was also what the dashboard said when it hadn't
+  been able to ask.** When wordpress.org was unreachable, WP's update
+  transient came back with an empty response and the panel rendered it
+  as good news. Both the heartbeat and the inventory pull now carry an
+  `update_check` block — whether a poll went out, whether it answered,
+  the reason if it failed, and the transient's own timestamp — so an
+  unanswered question can be told apart from an answer of "nothing".
+
+- **Disconnecting from the WordPress side left the cron events
+  running,** and disconnecting from the dashboard side didn't tell the
+  site at all: its settings page kept saying "Connected" until a
+  heartbeat came back 401. There is now one `Pairing\Teardown` behind
+  all four paths — the site's own Disconnect button, the dashboard's
+  new `POST /deckwp/v1/unpair` push, and the 401 fallbacks in both
+  schedulers — so every route out leaves the site in the same state,
+  cron included.
+
+### Added
+
+- **`wporg_slug` on every plugin and theme row.** WordPress identifies
+  a plugin by a *path*, which is not the same thing as its
+  wordpress.org slug: `hello.php` is `hello` locally and `hello-dolly`
+  in the directory. Anything building a download URL from the local
+  slug 404s — and since Hello Dolly ships with every WordPress install,
+  every paired site carried at least one item whose scan could only
+  ever fail. The connector now reports the slug WordPress itself
+  matched the item to, harvested from both buckets of the update
+  transient (`response` *and* `no_update`, so an up-to-date plugin is
+  covered too), and reports `null` when wordpress.org has no such item
+  — which is a real answer, not a missing one.
+
+- **`POST /deckwp/v1/unpair`** — HMAC-signed, so the dashboard can
+  clear a site's credentials at the moment the operator clicks
+  Disconnect rather than waiting for the site to discover it.
+
+- **`active` on every `install-batch` result row**, read back from
+  WordPress after the operation rather than echoed from what the
+  operation intended.
+
+### Changed
+
+- `Heartbeat\Scheduler` and `Scan\Scheduler` take an optional
+  `Teardown` collaborator; `Pairing\Handler` takes an optional `Setup`.
+  All are defaulted, so existing construction sites keep working.
+- `Pairing\Handler::pair()` gained a `first_heartbeat` key in its
+  result array, reporting whether the first inventory push landed.
+
 ## [0.39.1] - 2026-08-03
 
 ### Fixed

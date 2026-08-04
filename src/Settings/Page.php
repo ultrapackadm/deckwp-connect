@@ -6,6 +6,7 @@ defined('ABSPATH') || exit;
 
 use DeckWP\Connect\Heartbeat\Scheduler as HeartbeatScheduler;
 use DeckWP\Connect\Pairing\Handler as PairingHandler;
+use DeckWP\Connect\Pairing\Teardown;
 use DeckWP\Connect\Storage\Settings as SettingsStore;
 
 /**
@@ -76,14 +77,19 @@ class Page
     /** @var HeartbeatScheduler */
     private $heartbeat;
 
+    /** @var Teardown */
+    private $teardown;
+
     public function __construct(
         ?SettingsStore $settings = null,
         ?PairingHandler $pairing = null,
-        ?HeartbeatScheduler $heartbeat = null
+        ?HeartbeatScheduler $heartbeat = null,
+        ?Teardown $teardown = null
     ) {
         $this->settings  = $settings ?? new SettingsStore();
         $this->pairing   = $pairing ?? new PairingHandler();
         $this->heartbeat = $heartbeat ?? new HeartbeatScheduler();
+        $this->teardown  = $teardown ?? new Teardown();
     }
 
     /**
@@ -227,9 +233,10 @@ class Page
 
     /**
      * Fire a heartbeat synchronously and report the outcome. Bypasses
-     * the WP-Cron schedule + the `DECKWP_CONNECT_ENABLE_HEARTBEAT` flag —
-     * useful for verifying signing + payload during dev without waiting
-     * for the cron to tick.
+     * the WP-Cron schedule (and the `DECKWP_CONNECT_ENABLE_HEARTBEAT`
+     * opt-out, which only gates scheduling) — useful for verifying
+     * signing + payload without waiting for the cron to tick, and the
+     * operator's manual recovery when a site's cron is broken.
      */
     private function handleHeartbeatSubmit(): void
     {
@@ -272,18 +279,24 @@ class Page
      * Also fires a best-effort `disconnect` event at the dashboard so
      * the site row can flip from `paired` to `revoked` instead of
      * sitting at "Paired" with stale `last_seen_at`. The notification
-     * MUST happen before `clearConnection()` — once the secret is
-     * gone we can't sign the request anymore. If the network call
-     * fails we still proceed with the local clear (the user wants out;
-     * a stale dashboard row is recoverable, an unclickable Disconnect
-     * button is not).
+     * MUST happen before the teardown — once the secret is gone we
+     * can't sign the request anymore. If the network call fails we
+     * still proceed with the local clear (the user wants out; a stale
+     * dashboard row is recoverable, an unclickable Disconnect button
+     * is not).
+     *
+     * The teardown itself is {@see Teardown}, shared with the 401
+     * paths and the dashboard's `/unpair` route — which is how this
+     * path picked up the cron clearing it was missing. `notify: false`
+     * because the operator is standing right here; the banner exists
+     * to explain a disconnect they didn't perform.
      */
     private function handleDisconnectSubmit(): void
     {
         check_admin_referer(self::NONCE_DISCONNECT);
 
         $remote = $this->pairing->disconnect();
-        $this->settings->clearConnection();
+        $this->teardown->run('admin_disconnect', false);
 
         if ($remote['ok']) {
             add_settings_error(
@@ -348,19 +361,18 @@ class Page
      * the dashboard's /sites/create so they can re-pair without
      * hunting for the URL.
      *
-     * Persisted in a 1-day transient (set by
-     * {@see \DeckWP\Connect\Heartbeat\Scheduler::handleRevoke()}); we
+     * Persisted in a 1-day transient (set by {@see Teardown}); we
      * delete it here on first read so the banner doesn't follow the
      * operator forever after a single click.
      */
     private function renderRevokeNotice(): void
     {
-        $notice = get_transient('deckwp_connect_revoke_notice');
+        $notice = get_transient(Teardown::NOTICE_KEY);
         if (! is_array($notice)) {
             return;
         }
 
-        delete_transient('deckwp_connect_revoke_notice');
+        delete_transient(Teardown::NOTICE_KEY);
 
         $platformUrl = (string) ($notice['platform_url'] ?? '');
         $repairLink = $platformUrl !== ''

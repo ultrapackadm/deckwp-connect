@@ -5,6 +5,7 @@ namespace DeckWP\Connect\REST\Routes;
 defined('ABSPATH') || exit;
 
 use DeckWP\Connect\Backup\BackupManager;
+use DeckWP\Connect\Inventory\ItemState;
 use WP_REST_Request;
 use WP_REST_Response;
 
@@ -27,9 +28,17 @@ use WP_REST_Response;
  *
  * Response 200:
  *
- *     { "ok": true }
+ *     { "ok": true, "slug": "contact-form-7", "type": "plugin",
+ *       "installed": true, "version": "6.0", "active": true }
  *
  * Response 4xx/5xx: { "ok": false, "error": "...", "error_code": "..." }
+ *
+ * The response used to be a bare `{"ok": true}`, which left the panel
+ * inferring the outcome from the backup row it had asked us to restore.
+ * That inference was wrong in the obvious case: restore 6.0 over 6.1.6
+ * and the panel kept showing 6.1.6 until someone pressed Refresh. The
+ * post-state fields above are read back from WordPress after the swap
+ * so the dashboard has no reason to guess.
  *
  * Triggered by:
  *   1. The dashboard's manual "Restore" button (operator-initiated
@@ -51,9 +60,13 @@ class RestoreBackupRoute
     /** @var BackupManager */
     private $backupManager;
 
-    public function __construct(?BackupManager $backupManager = null)
+    /** @var ItemState */
+    private $state;
+
+    public function __construct(?BackupManager $backupManager = null, ?ItemState $state = null)
     {
         $this->backupManager = $backupManager ?? new BackupManager();
+        $this->state = $state ?? new ItemState();
     }
 
     /**
@@ -171,6 +184,20 @@ class RestoreBackupRoute
             }
         }
 
+        // Capture the pre-restore activation state. A restore replaces
+        // files under a plugin that may be running right now; if the
+        // snapshot's main file is named differently from the one on
+        // disk, WordPress drops it out of the active set and the site
+        // silently loses a plugin the operator only meant to downgrade.
+        $wasActive = false;
+        $wasNetworkActive = false;
+        if ($type === 'plugin') {
+            $before = $this->state->plugin($slug);
+            $wasActive = $before['active'];
+            $wasNetworkActive = $wasActive && $before['plugin_file'] !== null
+                && $this->state->isPluginActiveForNetwork($before['plugin_file']);
+        }
+
         $result = $type === 'theme'
             ? $this->backupManager->restoreTheme(
                 $absolutePath,
@@ -196,7 +223,84 @@ class RestoreBackupRoute
             return new WP_REST_Response($result, $status);
         }
 
-        return new WP_REST_Response(['ok' => true], 200);
+        // The folder swap happened outside WP_Upgrader, so nothing
+        // invalidated the `plugins` object cache. Without this, any
+        // get_plugins() call later in this request — including the one
+        // behind the post-state read below — answers from the pre-swap
+        // scan and we would report the version we just replaced.
+        if (function_exists('wp_clean_plugins_cache')) {
+            // false: leave the update transient alone. Clearing it here
+            // would make the next inventory pull re-poll wp.org for no
+            // reason, and the transient is refreshed on its own schedule.
+            wp_clean_plugins_cache(false);
+        }
+        if (function_exists('wp_clean_themes_cache')) {
+            wp_clean_themes_cache(false);
+        }
+
+        $reactivationError = null;
+        if ($type === 'plugin' && $wasActive) {
+            $reactivationError = $this->reactivate($slug, $wasNetworkActive);
+        }
+
+        $after = $type === 'theme' ? $this->state->theme($slug) : $this->state->plugin($slug);
+
+        $response = [
+            'ok' => true,
+            'slug' => $slug,
+            'type' => $type,
+            'installed' => $after['installed'],
+            'version' => $after['version'],
+            'active' => $after['active'],
+        ];
+
+        if ($reactivationError !== null) {
+            // The restore itself succeeded — 200 is honest. But the
+            // operator needs to know the plugin came back switched off,
+            // so the panel gets a field it can surface rather than a
+            // silent discrepancy.
+            $response['reactivation_error'] = $reactivationError;
+        }
+
+        return new WP_REST_Response($response, 200);
+    }
+
+    /**
+     * Put a plugin back into the active set after a restore.
+     *
+     * Silent, for the same reason {@see \DeckWP\Connect\Install\Installer}
+     * restores activation silently: the site never observed a
+     * deactivation, so `register_activation_hook` callbacks — which mean
+     * "first install" — have no business running.
+     *
+     * @return string|null Error message, or null when the plugin is
+     *         active again (including when it never stopped being).
+     */
+    private function reactivate(string $slug, bool $networkWide): ?string
+    {
+        $pluginFile = $this->state->findPluginFile($slug);
+        if ($pluginFile === null) {
+            return sprintf('Restore completed but no plugin file for "%s" was found to re-activate.', $slug);
+        }
+        if ($this->state->isPluginActive($pluginFile)) {
+            return null;
+        }
+
+        if (! function_exists('activate_plugin')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        if (! function_exists('activate_plugin')) {
+            return 'Could not load wp-admin/includes/plugin.php to re-activate the plugin.';
+        }
+
+        $activation = activate_plugin($pluginFile, '', $networkWide, true);
+        if (is_wp_error($activation)) {
+            return sprintf('%s: %s', (string) $activation->get_error_code(), (string) $activation->get_error_message());
+        }
+
+        return $this->state->isPluginActive($pluginFile)
+            ? null
+            : sprintf('activate_plugin("%s") reported no error but the plugin is still inactive.', $pluginFile);
     }
 
     /**

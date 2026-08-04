@@ -25,12 +25,11 @@ use DeckWP\Connect\Whitelabel\Branding as WhitelabelBranding;
  * ## Subsystems registered (current state)
  *
  *   - Settings\Page         — admin UI for the pairing handshake
- *   - Heartbeat\Scheduler   — WP-Cron-driven heartbeat sender (gated
- *                             by the DECKWP_CONNECT_ENABLE_HEARTBEAT
- *                             constant; off by default)
- *   - Scan\Scheduler        — WP-Cron-driven security scan sender
- *                             (gated by DECKWP_CONNECT_ENABLE_SCAN;
- *                             off by default)
+ *   - Heartbeat\Scheduler   — WP-Cron-driven heartbeat sender. Runs on
+ *                             every paired site; a site can opt out with
+ *                             DECKWP_CONNECT_ENABLE_HEARTBEAT = false.
+ *   - Scan\Scheduler        — WP-Cron-driven security scan sender, same
+ *                             opt-out shape via DECKWP_CONNECT_ENABLE_SCAN.
  *   - REST\Server                — exposes deckwp/v1/* routes for the
  *                                  dashboard. Currently: scan,
  *                                  install-batch, restore-backup,

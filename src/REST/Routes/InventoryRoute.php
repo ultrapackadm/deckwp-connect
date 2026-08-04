@@ -101,6 +101,12 @@ class InventoryRoute
             // genuinely has zero themes), so adding the key here
             // makes Refresh actually refresh themes.
             'themes'            => $this->themeInventory->collect(),
+            // Same key the heartbeat sends. Evaluated after `plugins`
+            // on purpose: collect() is what runs the wp.org poll this
+            // reports on. Lets "Refresh" tell the operator the check
+            // failed instead of rendering an empty result as
+            // "All up to date".
+            'update_check'      => $this->inventory->lastUpdateCheck(),
         ];
 
         return new WP_REST_Response($payload, 200);

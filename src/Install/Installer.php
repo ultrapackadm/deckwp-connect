@@ -5,6 +5,7 @@ namespace DeckWP\Connect\Install;
 defined('ABSPATH') || exit;
 
 use DeckWP\Connect\Backup\BackupManager;
+use DeckWP\Connect\Inventory\ItemState;
 use DeckWP\Connect\License\LicenseDetector;
 use DeckWP\Connect\Smoke\PostUpdateChecker;
 
@@ -30,9 +31,13 @@ use DeckWP\Connect\Smoke\PostUpdateChecker;
  * Output — one result row per input item, in input order:
  *
  *     [
- *       ['slug' => '...', 'status' => 'installed'|'unchanged'|'failed',
+ *       ['slug' => '...', 'status' => 'installed'|'unchanged'|'failed'|'rolled_back',
  *        'version_before' => '5.2.0', 'version_after' => '5.4.0',
  *        'error' => null,
+ *        // Read back from WordPress after the operation, so the
+ *        // dashboard settles on what the site actually does rather
+ *        // than on what the update was supposed to achieve.
+ *        'active' => true,
  *        // Present iff backup_required was true on the input item
  *        // and snapshot succeeded:
  *        'backup' => ['local_path' => '...', 'checksum' => '...', 'size_bytes' => 1234567]],
@@ -49,10 +54,11 @@ use DeckWP\Connect\Smoke\PostUpdateChecker;
  * succeeds, its metadata rides back in the response so the dashboard
  * can flip the corresponding Backup row from `Created` to `Available`.
  *
- * Auto-rollback on failed upgrade lives in Sprint 4 T4 (still TODO).
- * v1 of T3 produces the snapshot + records it; the upgrade itself
- * either succeeds or returns a Failed status, and the operator
- * triggers Restore manually for now.
+ * When the post-upgrade smoke check fails and a snapshot exists, the
+ * Installer restores it itself and returns `rolled_back` — see
+ * {@see self::handleSmokeFailure()}. Without a snapshot there is
+ * nowhere to roll back to, so the smoke reason is surfaced verbatim
+ * and the operator decides.
  *
  * ## How the upgrade actually happens
  *
@@ -78,6 +84,16 @@ use DeckWP\Connect\Smoke\PostUpdateChecker;
  * We surface that verbatim in the error field so the operator can
  * fix wp-config.
  *
+ * ## Activation state is ours to preserve
+ *
+ * Core's `Plugin_Upgrader::upgrade()` deactivates an active plugin
+ * before replacing its files and expects an admin pageload to switch
+ * it back on. We are not an admin pageload, so
+ * {@see self::restoreActiveState()} does it — on the success path, on
+ * the WP_Error path, and again after a rollback. Every plugin row we
+ * return therefore carries an `active` key read back from WordPress
+ * after the fact, never echoed from what we intended to happen.
+ *
  * ## Safety / idempotency
  *
  * - `upgrade()` returns `false` when there's nothing to upgrade
@@ -100,14 +116,19 @@ class Installer
     /** @var LicenseDetector */
     private $licenseDetector;
 
+    /** @var ItemState */
+    private $state;
+
     public function __construct(
         ?BackupManager $backupManager = null,
         ?PostUpdateChecker $smokeChecker = null,
-        ?LicenseDetector $licenseDetector = null
+        ?LicenseDetector $licenseDetector = null,
+        ?ItemState $state = null
     ) {
         $this->backupManager   = $backupManager ?? new BackupManager();
         $this->smokeChecker    = $smokeChecker ?? new PostUpdateChecker();
         $this->licenseDetector = $licenseDetector ?? new LicenseDetector();
+        $this->state           = $state ?? new ItemState();
     }
 
     /**
@@ -230,12 +251,17 @@ class Installer
 
         $beforeVersion = $this->readPluginVersion($pluginFile);
 
-        // Snapshot the active state BEFORE the upgrade so the smoke
-        // check can compare. Plugin_Upgrader sometimes re-activates
-        // the plugin automatically and sometimes doesn't (depends on
-        // whether activation throws); a side-by-side compare is the
-        // only reliable signal.
+        // Snapshot the active state BEFORE the upgrade. Two consumers:
+        // restoreActiveState() puts it back afterwards (core takes it
+        // away — see that method), and the smoke check compares against
+        // it to catch a plugin WP auto-deactivated on a real fatal.
+        //
+        // Network-wide is captured separately because re-activating a
+        // network-active plugin per-site would move it between two
+        // different option rows (`active_sitewide_plugins` vs
+        // `active_plugins`) and silently narrow its scope to one blog.
         $wasActive = $this->isPluginActive($pluginFile);
+        $wasNetworkActive = $wasActive && $this->isPluginActiveForNetwork($pluginFile);
 
         // Pre-update snapshot when the dashboard asked for one. We
         // refuse to proceed with the upgrade if the snapshot fails —
@@ -279,10 +305,24 @@ class Installer
             : $this->runUpgrade($pluginFile);
 
         // is_wp_error: a real failure inside the upgrader (ZIP download
-        // failed, FS_METHOD is ftp without creds, etc).
+        // failed, FS_METHOD is ftp without creds, etc). Core may already
+        // have deactivated the plugin by this point — the deactivation
+        // runs on `upgrader_pre_install`, well before the download can
+        // fail — so an aborted upgrade must not leave a working plugin
+        // switched off.
         if (is_wp_error($upgradeResult)) {
+            $this->restoreActiveState($pluginFile, $wasActive, $wasNetworkActive);
+
             return $this->withBackup(
-                $this->failure($slug, $this->formatWpError($upgradeResult)),
+                // The generic failure row carries no post-state, and
+                // usually can't: most failures happen before anything
+                // on disk moved. This one is different — we know the
+                // plugin exists and we just put its activation back,
+                // so say what it is. If the restore above didn't take,
+                // the dashboard needs to show a deactivated plugin,
+                // not the one it had before the operator clicked.
+                $this->failure($slug, $this->formatWpError($upgradeResult))
+                    + ['active' => $this->isPluginActive($pluginFile)],
                 $backupResult
             );
         }
@@ -297,10 +337,37 @@ class Installer
                 'version_before' => $beforeVersion,
                 'version_after' => $beforeVersion,
                 'error' => null,
+                'active' => $this->isPluginActive($pluginFile),
             ], $backupResult);
         }
 
         $afterVersion = $this->readPluginVersion($pluginFile);
+
+        // Put the plugin back the way we found it BEFORE the smoke
+        // check looks at it. Core switched it off on purpose and left
+        // reactivation to a UI we don't run; without this the smoke
+        // check reads core's own bookkeeping as a fatal and rolls a
+        // perfectly good upgrade back. See restoreActiveState().
+        $reactivation = $this->restoreActiveState($pluginFile, $wasActive, $wasNetworkActive);
+        if ($reactivation['error'] !== null) {
+            // Reactivation genuinely failed — the new build won't load.
+            // That IS the condition auto-rollback exists for, so take
+            // the same path the smoke check would, with the real reason
+            // instead of the misleading "WP auto-deactivated" one.
+            return $this->handleSmokeFailure(
+                'plugin',
+                $slug,
+                $beforeVersion,
+                [
+                    'ok' => false,
+                    'reason' => 'reactivation_failed',
+                    'detail' => $reactivation['error'],
+                ],
+                $backupResult,
+                $wasActive,
+                $wasNetworkActive
+            );
+        }
 
         // Post-update smoke check — folder + main file PHP validity
         // + activation state survived. If something's broken AND
@@ -314,7 +381,9 @@ class Installer
                 $slug,
                 $beforeVersion,
                 $smokeResult,
-                $backupResult
+                $backupResult,
+                $wasActive,
+                $wasNetworkActive
             );
         }
 
@@ -337,6 +406,11 @@ class Installer
             'version_before' => $beforeVersion,
             'version_after' => $afterVersion,
             'error' => null,
+            // Re-read from disk rather than echoing $wasActive back.
+            // The dashboard settles its Plugin row from this field, and
+            // the whole class of bug this response shape is answering is
+            // the panel believing a state WordPress never reached.
+            'active' => $this->isPluginActive($pluginFile),
             'requires_plugins' => $requiresPlugins,
             'missing_dependencies' => $missingDeps,
         ], $backupResult);
@@ -355,13 +429,28 @@ class Installer
      * The rest of the choreography (snapshot path resolution,
      * error envelope shape) is identical between kinds.
      *
+     * A rollback is only complete when the item is running again.
+     * BackupManager swaps folders and nothing else, so a plugin that
+     * core deactivated on the way into a failed upgrade stayed
+     * deactivated after the rollback restored its files — the operator
+     * got the old version back, switched off, with the panel still
+     * showing it active. `$wasActive` is restored here, after the
+     * files are back, for exactly that reason.
+     *
      * @param  string                     $kind         'plugin' | 'theme'
      * @param  array<string, mixed>       $smokeResult
      * @param  array<string, mixed>|null  $backupResult
      * @return array<string, mixed>
      */
-    private function handleSmokeFailure(string $kind, string $slug, string $beforeVersion, array $smokeResult, $backupResult): array
-    {
+    private function handleSmokeFailure(
+        string $kind,
+        string $slug,
+        string $beforeVersion,
+        array $smokeResult,
+        $backupResult,
+        bool $wasActive = false,
+        bool $wasNetworkActive = false
+    ): array {
         $reason = (string) ($smokeResult['reason'] ?? 'unknown');
         $detail = (string) ($smokeResult['detail'] ?? 'no detail');
 
@@ -419,18 +508,173 @@ class Installer
             );
         }
 
-        // Restore succeeded. The plugin folder is back to its
-        // pre-upgrade state. Report `rolled_back` so the dashboard
-        // can settle the Update row to UpdateStatus::RolledBack and
-        // mark the Backup as Restored.
-        return $this->withBackup([
+        // Restore succeeded. The files are back to their pre-upgrade
+        // state; now put the item back into service, because "rolled
+        // back" has to mean the site is running what it ran before,
+        // not merely that the right bytes are on disk.
+        $reactivationError = null;
+        if ($wasActive) {
+            if ($kind === 'theme') {
+                $reactivationError = $this->restoreActiveTheme($slug);
+            } else {
+                $pluginFile = $this->findPluginFile($slug);
+                $reactivationError = $pluginFile === null
+                    ? sprintf('Rollback restored the files but no plugin file for "%s" could be found to re-activate.', $slug)
+                    : $this->restoreActiveState($pluginFile, true, $wasNetworkActive)['error'];
+            }
+        }
+
+        // Report `rolled_back` so the dashboard can settle the Update
+        // row to UpdateStatus::RolledBack and mark the Backup as
+        // Restored. `active` is read back from WordPress so the panel
+        // never has to guess what the rollback left behind.
+        $row = [
             'slug' => $slug,
             'status' => 'rolled_back',
             'version_before' => $beforeVersion,
             'version_after' => $beforeVersion,
             'error' => sprintf('Post-upgrade smoke check failed (%s): %s', $reason, $detail),
             'rollback_reason' => $reason,
-        ], $backupResult);
+            'active' => $kind === 'theme'
+                ? $this->isThemeActive($slug)
+                : $this->isSlugActive($slug),
+        ];
+
+        if ($reactivationError !== null) {
+            // The rollback itself worked; only the "put it back into
+            // service" step didn't. Say both, in that order — the
+            // operator's next action depends on which half failed.
+            $row['error'] .= sprintf(' Rollback restored version %s but re-activation failed: %s', $beforeVersion, $reactivationError);
+            $row['reactivation_error'] = $reactivationError;
+        }
+
+        return $this->withBackup($row, $backupResult);
+    }
+
+    /**
+     * Put an active plugin back into the active set after something
+     * else switched it off.
+     *
+     * The something else is almost always WordPress. Core's
+     * {@see \Plugin_Upgrader::upgrade()} hooks
+     * `deactivate_plugin_before_upgrade()` onto `upgrader_pre_install`,
+     * which silently deactivates the plugin before its files are
+     * replaced. Core's only reactivation path is
+     * {@see \Plugin_Upgrader_Skin::after()}, which prints an
+     * `update.php?action=activate-plugin` iframe into an admin
+     * pageload — a UI we are not, running under
+     * `Automatic_Upgrader_Skin` inside a REST request.
+     *
+     * So every upgrade of an ACTIVE plugin through /install-batch used
+     * to finish with that plugin on the new version and switched off,
+     * the smoke check read the deactivation core had just performed as
+     * a fatal, and a working upgrade was rolled back. Contact Form 7
+     * 6.0 → 6.1.6 was the report that surfaced it. `wp plugin update`
+     * did not reproduce it because WP-CLI goes through
+     * `Plugin_Upgrader::bulk_upgrade()`, which never registers the
+     * deactivation filter — as does the wp-admin AJAX updater, which
+     * is why nobody hits this from a browser either.
+     *
+     * Silent on purpose (`$silent = true`): core deactivated silently,
+     * so no `deactivate_plugin` hook fired, and firing `activate_plugin`
+     * / `activate_{$plugin}` on the way back would run
+     * `register_activation_hook` callbacks that belong to a first
+     * install, not to an upgrade. Neither WP-CLI nor cron auto-updates
+     * fire them on upgrade either. We are restoring a state, not
+     * performing an activation.
+     *
+     * Idempotent: `activate_plugin()` returns null without touching
+     * anything when the plugin is already in the active set, so the
+     * premium `download_url` path (which uses `WP_Upgrader::run()` and
+     * never deactivates) passes straight through.
+     *
+     * @return array{restored: bool, error: string|null} `restored` is
+     *         true only when this call is what put the plugin back.
+     */
+    private function restoreActiveState(string $pluginFile, bool $wasActive, bool $wasNetworkActive): array
+    {
+        if (! $wasActive || $this->isPluginActive($pluginFile)) {
+            return ['restored' => false, 'error' => null];
+        }
+
+        if (! function_exists('activate_plugin')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        if (! function_exists('activate_plugin')) {
+            return [
+                'restored' => false,
+                'error' => 'Could not load wp-admin/includes/plugin.php to re-activate the plugin.',
+            ];
+        }
+
+        $result = activate_plugin($pluginFile, '', $wasNetworkActive, true);
+        if (is_wp_error($result)) {
+            return ['restored' => false, 'error' => $this->formatWpError($result)];
+        }
+
+        if (! $this->isPluginActive($pluginFile)) {
+            return [
+                'restored' => false,
+                'error' => sprintf(
+                    'activate_plugin("%s") reported no error but the plugin is still inactive.',
+                    $pluginFile
+                ),
+            ];
+        }
+
+        return ['restored' => true, 'error' => null];
+    }
+
+    /**
+     * Theme counterpart of {@see self::restoreActiveState()}.
+     *
+     * Theme upgrades never deactivate (there is no equivalent of
+     * `deactivate_plugin_before_upgrade` in `Theme_Upgrader`), but a
+     * rollback can still land with the wrong stylesheet live: the
+     * upgrade that failed may have shipped a renamed payload, and WP
+     * falls back to the default theme when `get_stylesheet()` points
+     * at a directory that vanished.
+     *
+     * @return string|null Error message, or null when nothing was
+     *         wrong or the switch took.
+     */
+    private function restoreActiveTheme(string $slug): ?string
+    {
+        if ($this->isThemeActive($slug)) {
+            return null;
+        }
+        if (! function_exists('switch_theme') || ! $this->themeExists($slug)) {
+            return sprintf('Theme "%s" is not installed after the rollback — cannot re-activate it.', $slug);
+        }
+
+        switch_theme($slug);
+
+        if (! $this->isThemeActive($slug)) {
+            return sprintf(
+                'switch_theme("%s") did not take effect — active stylesheet is now "%s".',
+                $slug,
+                function_exists('get_stylesheet') ? (string) get_stylesheet() : 'unknown'
+            );
+        }
+
+        return null;
+    }
+
+    /**
+     * `is_plugin_active()` by slug rather than by plugin file, for the
+     * paths that only have a slug in hand (rollback, where the file may
+     * have changed identity between versions).
+     */
+    private function isSlugActive(string $slug): bool
+    {
+        $pluginFile = $this->findPluginFile($slug);
+
+        return $pluginFile !== null && $this->isPluginActive($pluginFile);
+    }
+
+    private function isPluginActiveForNetwork(string $pluginFile): bool
+    {
+        return $this->state->isPluginActiveForNetwork($pluginFile);
     }
 
     /** Convert a `deckwp-backups/foo.zip` relative path to absolute. */
@@ -447,16 +691,9 @@ class Installer
         return $base . '/' . ltrim($relative, '/\\');
     }
 
-    /**
-     * Wrapper around WP's `is_plugin_active()` that loads the admin
-     * helper if it isn't already loaded (REST/cron contexts).
-     */
     private function isPluginActive(string $pluginFile): bool
     {
-        if (! function_exists('is_plugin_active')) {
-            require_once ABSPATH . 'wp-admin/includes/plugin.php';
-        }
-        return function_exists('is_plugin_active') && (bool) is_plugin_active($pluginFile);
+        return $this->state->isPluginActive($pluginFile);
     }
 
     /**
@@ -477,44 +714,22 @@ class Installer
         return $row;
     }
 
-    /**
-     * Map a slug ("akismet") to the plugin file ("akismet/akismet.php")
-     * by walking `get_plugins()` and matching on the directory name.
-     *
-     * Single-file plugins (slug == file == "hello.php") are also
-     * supported as a fallback since their directory is empty in the
-     * key WP uses.
+    /*
+     | The four readers below delegate to ItemState rather than keeping
+     | their own copies. They used to be private duplicates of the same
+     | logic the restore route needed, which is how the panel and the
+     | site ended up disagreeing about what "active" meant — two readers
+     | drift, one cannot.
      */
+
     private function findPluginFile(string $slug): ?string
     {
-        if (! function_exists('get_plugins')) {
-            require_once ABSPATH . 'wp-admin/includes/plugin.php';
-        }
-
-        $plugins = get_plugins();
-        foreach ($plugins as $file => $_data) {
-            $dir = strpos($file, '/') !== false ? explode('/', $file, 2)[0] : $file;
-            if ($dir === $slug) {
-                return $file;
-            }
-            // Single-file plugin (no directory): "hello.php" type.
-            if ($dir === ($slug . '.php')) {
-                return $file;
-            }
-        }
-
-        return null;
+        return $this->state->findPluginFile($slug);
     }
 
     private function readPluginVersion(string $pluginFile): string
     {
-        $path = WP_PLUGIN_DIR . '/' . $pluginFile;
-        if (! is_readable($path) || ! function_exists('get_plugin_data')) {
-            return '';
-        }
-        $data = get_plugin_data($path, false, false);
-
-        return isset($data['Version']) ? (string) $data['Version'] : '';
+        return $this->state->readPluginVersion($pluginFile);
     }
 
     /**
@@ -1049,7 +1264,8 @@ class Installer
                 $slug,
                 $beforeVersion,
                 $smokeResult,
-                $backupResult
+                $backupResult,
+                $wasActive
             );
         }
 
@@ -1068,17 +1284,13 @@ class Installer
     }
 
     /**
-     * Wrapper around WP's `get_stylesheet()` — returns true iff the
-     * given theme slug matches the currently-active stylesheet.
-     * Captured BEFORE an upgrade so the smoke check can detect a
-     * theme that silently went inactive after.
+     * True iff the given theme slug is the currently-active stylesheet.
+     * Captured BEFORE an upgrade so the smoke check can detect a theme
+     * that silently went inactive after.
      */
     private function isThemeActive(string $slug): bool
     {
-        if (! function_exists('get_stylesheet')) {
-            return false;
-        }
-        return (string) get_stylesheet() === $slug;
+        return $this->state->isThemeActive($slug);
     }
 
     /**

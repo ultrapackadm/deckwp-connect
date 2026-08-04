@@ -8,6 +8,7 @@ use DeckWP\Connect\HMAC\Signer;
 use DeckWP\Connect\HTTP\ApiClient;
 use DeckWP\Connect\Inventory\PluginInventory;
 use DeckWP\Connect\Inventory\ThemeInventory;
+use DeckWP\Connect\Pairing\Teardown;
 use DeckWP\Connect\Storage\Settings;
 
 /**
@@ -63,13 +64,22 @@ use DeckWP\Connect\Storage\Settings;
  * `cron_schedules` filter at the value of `heartbeat_seconds` in the
  * settings option (server-issued during pair, default 300 seconds).
  *
- * Schedule is created on `init` whenever the connector is paired AND
- * the constant `DECKWP_CONNECT_ENABLE_HEARTBEAT` is `true`. Default is
- * disabled so the connector doesn't fire requests against an endpoint
- * the dashboard hasn't shipped yet — flip it once the dashboard's
- * `/api/v1/sites/{id}/events` route is live.
+ * Schedule is created on `init` whenever the connector is paired, and
+ * immediately at the end of the handshake by {@see \DeckWP\Connect\Pairing\Setup}.
  *
- *     define( 'DECKWP_CONNECT_ENABLE_HEARTBEAT', true );
+ * This used to be gated behind `DECKWP_CONNECT_ENABLE_HEARTBEAT`,
+ * defaulting to OFF, because the dashboard's
+ * `/api/v1/sites/{id}/events` route didn't exist yet. That route has
+ * been live for a long time and nothing ever defined the constant, so
+ * the practical effect was that no install anywhere scheduled a
+ * heartbeat: a freshly paired site reported an empty inventory and
+ * never corrected itself, `last_seen_at` never advanced, and the only
+ * data the dashboard ever saw came from the operator pressing Refresh.
+ *
+ * The constant is now an opt-OUT, honoured only when it is defined
+ * and falsy:
+ *
+ *     define( 'DECKWP_CONNECT_ENABLE_HEARTBEAT', false );
  *
  * ## Manual trigger
  *
@@ -103,18 +113,23 @@ class Scheduler
     /** @var ThemeInventory */
     private $themeInventory;
 
+    /** @var Teardown */
+    private $teardown;
+
     public function __construct(
         ?Settings $settings = null,
         ?Signer $signer = null,
         ?ApiClient $http = null,
         ?PluginInventory $inventory = null,
-        ?ThemeInventory $themeInventory = null
+        ?ThemeInventory $themeInventory = null,
+        ?Teardown $teardown = null
     ) {
         $this->settings       = $settings ?? new Settings();
         $this->signer         = $signer ?? new Signer();
         $this->http           = $http ?? new ApiClient();
         $this->inventory      = $inventory ?? new PluginInventory();
         $this->themeInventory = $themeInventory ?? new ThemeInventory();
+        $this->teardown       = $teardown ?? new Teardown();
     }
 
     /**
@@ -152,8 +167,12 @@ class Scheduler
     /**
      * Schedule the cron event when:
      *   1. Connector is paired (we have a callback_url + secret).
-     *   2. The DECKWP_CONNECT_ENABLE_HEARTBEAT constant is truthy.
+     *   2. The site hasn't opted out via DECKWP_CONNECT_ENABLE_HEARTBEAT.
      *   3. No event of this type is already queued.
+     *
+     * Runs on every `init` (cheap: one option read + one cron array
+     * read) and once more, eagerly, from {@see \DeckWP\Connect\Pairing\Setup}
+     * the moment a pairing completes.
      */
     public function maybeSchedule(): void
     {
@@ -291,25 +310,17 @@ class Scheduler
      * Called when {@see self::sendNow()} sees a 401 from the dashboard,
      * which is the dashboard's signal that this site's credential was
      * deleted (operator clicked Disconnect on the dashboard side, or
-     * staff revoked it manually). Captures `platform_url` BEFORE the
-     * clear so the notice can render a "Re-pair this site" link back
-     * to the right dashboard.
+     * staff revoked it manually).
+     *
+     * This is the fallback path now: the dashboard pushes
+     * `POST /deckwp/v1/unpair` when it can reach us, and only sites
+     * that were unreachable at that moment find out this way. Both
+     * routes end in {@see Teardown} so they leave the site in the
+     * same state.
      */
     private function handleRevoke(): void
     {
-        $platformUrl = (string) $this->settings->get('platform_url', '');
-
-        $this->settings->clearConnection();
-
-        $ttl = defined('DAY_IN_SECONDS') ? DAY_IN_SECONDS : 86400;
-        set_transient('deckwp_connect_revoke_notice', [
-            'platform_url' => $platformUrl,
-            'revoked_at'   => time(),
-        ], $ttl);
-
-        if (function_exists('error_log')) {
-            error_log('[deckwp-connect] connection revoked by dashboard (heartbeat returned 401) — local state cleared');
-        }
+        $this->teardown->run('heartbeat_401');
     }
 
     /**
@@ -342,6 +353,13 @@ class Scheduler
             // won't prune existing theme installations during the
             // rollout window.
             'themes'            => $this->themeInventory->collect(),
+            // Whether the wp.org poll behind `plugins[].update_available`
+            // actually answered. Without it the dashboard can't tell
+            // "nothing to update" from "we couldn't ask", and renders
+            // both as "All up to date".
+            // MUST be read after collect() — that's what performs the
+            // poll this describes.
+            'update_check'      => $this->inventory->lastUpdateCheck(),
             'fatal_log'         => $this->collectFatalLog(),
         ];
     }
@@ -371,9 +389,14 @@ class Scheduler
         return array_values($log);
     }
 
+    /**
+     * On unless the site explicitly turns it off. Note the shape:
+     * `! defined() || value` — an undefined constant means "no
+     * opinion", which is not the same as "no".
+     */
     private function isHeartbeatEnabled(): bool
     {
-        return defined('DECKWP_CONNECT_ENABLE_HEARTBEAT') && DECKWP_CONNECT_ENABLE_HEARTBEAT;
+        return ! defined('DECKWP_CONNECT_ENABLE_HEARTBEAT') || DECKWP_CONNECT_ENABLE_HEARTBEAT;
     }
 
     /**

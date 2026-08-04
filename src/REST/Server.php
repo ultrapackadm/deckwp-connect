@@ -23,6 +23,7 @@ use DeckWP\Connect\REST\Routes\ThemeSwitchRoute;
 use DeckWP\Connect\REST\Routes\ScanRoute;
 use DeckWP\Connect\REST\Routes\SetManagedSlugsRoute;
 use DeckWP\Connect\REST\Routes\SsoLoginRoute;
+use DeckWP\Connect\REST\Routes\UnpairRoute;
 use DeckWP\Connect\REST\Routes\WhitelabelRoute;
 
 /**
@@ -115,6 +116,10 @@ use DeckWP\Connect\REST\Routes\WhitelabelRoute;
  *     definition); falls back to WP cookie + nonce + manage_options
  *     auth. Delegates to {@see PairingHandler::pair()} for the
  *     synchronous handshake. {@see BootstrapPairingRoute}.
+ *   - POST /wp-json/deckwp/v1/unpair — the dashboard is ending the
+ *     pairing; clear local connection state and stop the crons.
+ *     The push half of a disconnect that used to rely entirely on
+ *     the connector noticing a 401. {@see UnpairRoute}.
  *
  * ## Planned
  *
@@ -191,6 +196,9 @@ class Server
     /** @var BootstrapPairingRoute */
     private $bootstrapPairingRoute;
 
+    /** @var UnpairRoute */
+    private $unpairRoute;
+
     public function __construct(
         ?HmacVerifier $verifier = null,
         ?ScanRoute $scanRoute = null,
@@ -211,7 +219,8 @@ class Server
         ?DbScanRoute $dbScanRoute = null,
         ?DbCleanupRoute $dbCleanupRoute = null,
         ?DbOptimizeTablesRoute $dbOptimizeTablesRoute = null,
-        ?BootstrapPairingRoute $bootstrapPairingRoute = null
+        ?BootstrapPairingRoute $bootstrapPairingRoute = null,
+        ?UnpairRoute $unpairRoute = null
     ) {
         $this->verifier              = $verifier ?? new HmacVerifier();
         $this->scanRoute             = $scanRoute ?? new ScanRoute();
@@ -233,6 +242,7 @@ class Server
         $this->dbCleanupRoute        = $dbCleanupRoute ?? new DbCleanupRoute();
         $this->dbOptimizeTablesRoute = $dbOptimizeTablesRoute ?? new DbOptimizeTablesRoute();
         $this->bootstrapPairingRoute = $bootstrapPairingRoute ?? new BootstrapPairingRoute();
+        $this->unpairRoute           = $unpairRoute ?? new UnpairRoute();
     }
 
     /**
@@ -374,6 +384,15 @@ class Server
             'deckwp/v1',
             '/bootstrap-pairing',
             $this->bootstrapPairingRoute->args($permissionCallback)
+        );
+
+        // Unpair IS HMAC-protected, and deliberately so: the secret it
+        // authenticates with is one of the things it destroys, which
+        // makes the route single-use without any extra bookkeeping.
+        register_rest_route(
+            'deckwp/v1',
+            '/unpair',
+            $this->unpairRoute->args($permissionCallback)
         );
     }
 }

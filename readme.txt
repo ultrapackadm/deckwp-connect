@@ -4,7 +4,7 @@ Tags: management, updates, backups, security, multisite
 Requires at least: 5.2
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 0.39.0
+Stable tag: 0.40.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -92,6 +92,11 @@ Yes. White-labeling is configured from the DeckWP dashboard — rename the conne
 
 The complete, versioned history lives in `CHANGELOG.md` in the repository, and every GitHub Release carries its own notes:
 https://github.com/ultrapackadm/deckwp-connect/releases
+
+= 0.40.0 =
+* The scheduled heartbeat and scheduled scan now run on every paired site — both used to be gated behind constants that defaulted to off, so a paired site went quiet after its first report. Pairing also pushes the first inventory immediately instead of waiting for cron.
+* Rollbacks, restores and failed updates now report what WordPress actually ended up with (version and activation state, read back after the operation) instead of what the operation was meant to achieve — and a plugin core switched off mid-upgrade gets switched back on.
+* The security scan no longer reports the "Silence is golden" index.php stub, a signature quoted inside a code comment, or Windows file permissions as findings. See `CHANGELOG.md` for full details and earlier releases.
 
 = 0.34.0 =
 * Lowered the WordPress minimum to 5.2. The connector's WordPress API surface supports it; `WP_Site_Health` is the only 5.2-era dependency, and the Site Health module now degrades gracefully when it is unavailable. See `CHANGELOG.md` for full details and earlier releases.

@@ -20,17 +20,22 @@ use DeckWP\Connect\Storage\Settings;
  *    `X-DeckWP-Pairing-Token` header and a JSON body of WP metadata.
  * 4. On 200 the dashboard returns the durable `hmac_secret` (base64),
  *    `site_id`, `team_slug`, `callback_url`, and the heartbeat/scan
- *    intervals. We persist them via {@see Settings::update()} and
- *    return a success result for the UI to render.
- * 5. On any non-2xx the response envelope's `error` is surfaced to the
+ *    intervals. We persist them via {@see Settings::update()}.
+ * 5. {@see Setup} then brings the connection online — cron events
+ *    scheduled, first inventory pushed — and we return a success
+ *    result for the UI to render.
+ * 6. On any non-2xx the response envelope's `error` is surfaced to the
  *    operator unchanged.
  *
  * ## Result shape
  *
  *     [
- *         'ok'      => bool,
- *         'message' => string,   // human-readable, safe to render
- *         'site_id' => string,   // populated only on success
+ *         'ok'              => bool,
+ *         'message'         => string,   // human-readable, safe to render
+ *         'site_id'         => string,   // populated only on success
+ *         'first_heartbeat' => bool,     // success only; false means the
+ *                                        // dashboard stays empty until
+ *                                        // the first cron tick
  *     ]
  *
  * The dashboard's `/api/v1/connect/pair` endpoint handles all the
@@ -58,21 +63,30 @@ class Handler
     /** @var Signer */
     private $signer;
 
+    /** @var Setup */
+    private $setup;
+
     public function __construct(
         ?ApiClient $http = null,
         ?Settings $settings = null,
-        ?Signer $signer = null
+        ?Signer $signer = null,
+        ?Setup $setup = null
     ) {
         $this->http     = $http ?? new ApiClient();
         $this->settings = $settings ?? new Settings();
         $this->signer   = $signer ?? new Signer();
+        // Share our Settings instance — Setup re-reads isPaired() right
+        // after we write the credentials, and two instances reading two
+        // caches is exactly the kind of thing that works locally and
+        // fails on a site with an object cache.
+        $this->setup    = $setup ?? new Setup($this->settings);
     }
 
     /**
      * Run the handshake. Empty-string token → user error, propagated
      * to the UI without hitting the network.
      *
-     * @return array{ok: bool, message: string, site_id: string}
+     * @return array{ok: bool, message: string, site_id: string, first_heartbeat?: bool}
      */
     public function pair(string $token, string $platformUrl = ''): array
     {
@@ -118,10 +132,28 @@ class Handler
             'connected_at'      => (string) time(),
         ]);
 
+        // Schedule the cron events and push the first inventory before
+        // we answer. See {@see Setup} for why the handshake isn't
+        // finished at the settings write.
+        $setup = $this->setup->run();
+
+        $message = sprintf('Connected to DeckWP. Site UUID %s.', (string) $body['site_id']);
+        if (! $setup['heartbeat_sent']) {
+            // Still `ok` — the pairing itself worked. But the operator
+            // is about to switch to a dashboard that has no plugin list
+            // on it, and they deserve to know that's a delivery problem
+            // and not a broken connection.
+            $message .= sprintf(
+                ' The first inventory could not be delivered (%s); the dashboard will fill in on the next scheduled heartbeat.',
+                $setup['heartbeat_error']
+            );
+        }
+
         return [
-            'ok'      => true,
-            'message' => sprintf('Connected to DeckWP. Site UUID %s.', (string) $body['site_id']),
-            'site_id' => (string) $body['site_id'],
+            'ok'             => true,
+            'message'        => $message,
+            'site_id'        => (string) $body['site_id'],
+            'first_heartbeat' => (bool) $setup['heartbeat_sent'],
         ];
     }
 
