@@ -4,7 +4,7 @@ Tags: management, updates, backups, security, multisite
 Requires at least: 5.2
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 0.40.0
+Stable tag: 0.41.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -92,6 +92,10 @@ Yes. White-labeling is configured from the DeckWP dashboard — rename the conne
 
 The complete, versioned history lives in `CHANGELOG.md` in the repository, and every GitHub Release carries its own notes:
 https://github.com/ultrapackadm/deckwp-connect/releases
+
+= 0.41.0 =
+* A theme that installs under a folder name different from its catalog slug (Citadela extracts to `citadela-theme`) no longer loses its premium identity on the dashboard — every theme result now reports the directory WordPress actually created.
+* A failed install or update no longer blames filesystem permissions by default. The connector asks WordPress for the real reason first, and only falls back to a hint — which now names both likely causes — when there is nothing to report. See `CHANGELOG.md` for full details and earlier releases.
 
 = 0.40.0 =
 * The scheduled heartbeat and scheduled scan now run on every paired site — both used to be gated behind constants that defaulted to off, so a paired site went quiet after its first report. Pairing also pushes the first inventory immediately instead of waiting for cron.

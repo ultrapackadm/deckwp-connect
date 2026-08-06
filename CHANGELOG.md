@@ -4,6 +4,49 @@ All notable changes to this project will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [SemVer](https://semver.org/).
 
+## [0.41.0] - 2026-08-06
+
+Two places where the connector knew more than it told the dashboard. In
+both, the operator-facing result was wrong in a way that pointed at the
+wrong culprit — a theme that "wasn't premium" and a permissions problem
+that wasn't a permissions problem.
+
+### Fixed
+
+- **A theme installed under a folder name that differs from its catalog
+  slug lost its premium identity.** The theme result echoed back the
+  slug it was *asked* for and discarded the stylesheet directory it had
+  just resolved. Citadela ships a package that extracts to
+  `citadela-theme` while the catalog calls it `citadela`, so the
+  dashboard could not match its own install against the request: the
+  next heartbeat saw an unknown directory, created a fresh row for it
+  with the default wp.org source, and the item's premium classification
+  — along with its update channel — was gone. Every theme result path
+  now carries `installed_slug`, and it is present even when the two
+  names agree, so its absence means one thing only: an older connector.
+
+- **A failed install or update was reported as a filesystem-permissions
+  problem regardless of what actually went wrong.** When WordPress's
+  upgrader returns a non-truthy result without a `WP_Error`, the
+  connector used to state, flatly, that this is "usually a
+  filesystem-permissions issue." The most common real cause is the
+  opposite: a clean download that WordPress then refuses to unpack —
+  a corrupt or truncated archive, or a package whose structure the
+  upgrader rejects. Sending the operator to `chmod` for that is a dead
+  end. The connector now asks the upgrader skin first — for a
+  `WP_Error` it raised but did not return, then for the last upgrade
+  message (markup stripped, since this lands in an operator-facing
+  field) — and only falls back to a hint when the skin has nothing to
+  say. That hint now names both possibilities instead of asserting one.
+
+### Internal
+
+- The repository gained a CI workflow that runs the test suite on PHP
+  7.4 (the compatibility floor) and 8.3 (production) on every push, so
+  a release can no longer be cut from a red tree. New coverage for the
+  active-plugin upgrade path, which reactivates a plugin WordPress
+  switched off mid-upgrade.
+
 ## [0.40.0] - 2026-08-04
 
 An end-to-end pass — create an account, pair a site, update plugins and
